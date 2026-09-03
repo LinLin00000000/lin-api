@@ -1,0 +1,80 @@
+---
+schema_version: 1
+component_id: new-api
+provenance: external-upstream
+repository_topology: github-fork
+divergence_strategy: maintained-source-divergence
+criticality: infra
+visibility: public
+owner: '@LinLin00000000'
+upstream:
+  locator: https://github.com/QuantumNous/new-api
+  tracking_ref: refs/heads/main
+  accepted_base: '36dbbf0f77e710455e745048f4a32e8120ad3fd2'
+policy:
+  cadence: on-demand
+  merge_mode: guarded-after-baseline
+  automation_baseline: pending
+  offer_schedule_after_baseline: true
+  product_posture: upstream-first-with-quality-floor
+  max_automation: A2
+  human_required_if: [risk>=R2, behavioral-conflict, behavioral-unknown, delta-scope-change, delta-retirement, invariant-change, product-tradeoff, production-deploy]
+invariants:
+  - id: INV-001
+    statement: 'Preserve the upstream AGPLv3 license, required author attribution notice, and visible link to the original New API project.'
+    validation_refs: ['LICENSE', 'README.md']
+  - id: INV-002
+    statement: 'Keep local changes narrow, auditable, and separable from upstream content so upstream updates remain reviewable.'
+    validation_refs: ['README.md', 'UPSTREAM.md', 'git diff upstream/main...main']
+  - id: INV-003
+    statement: 'Repository changes never imply authorization to deploy, restart, migrate data, or expose a production service.'
+    validation_refs: ['UPSTREAM.md']
+local_deltas:
+  - id: D001
+    intent: 'Present the downstream product as Lin API while retaining clear upstream provenance and an update-friendly README layout.'
+    behavior_scope: 'Repository identity and documentation only; no runtime behavior change at this baseline.'
+    invariant_refs: [INV-001, INV-002]
+    realization_refs: ['README.md', 'UPSTREAM.md']
+    retire_when: 'Lin API is retired or returns to an unmodified upstream distribution.'
+validation:
+  required_refs: ['README suffix byte comparison against accepted base', 'git diff --check', 'focused tests for each future runtime delta']
+deployment_impact:
+  policy_ref: 'Deployment requires a separate, explicit change window and runtime verification.'
+---
+
+# Lin API upstream adoption
+
+Lin API is a personally maintained downstream fork of [QuantumNous/new-api](https://github.com/QuantumNous/new-api). It is not the official New API project and does not imply endorsement by its upstream maintainers.
+
+## Baseline
+
+The initial accepted base is commit [`36dbbf0f77e710455e745048f4a32e8120ad3fd2`](https://github.com/QuantumNous/new-api/commit/36dbbf0f77e710455e745048f4a32e8120ad3fd2), which is also tagged `v1.0.0-rc.31` in the fetched upstream repository. The fork tracks `upstream/main`, but updates are adopted only after an explicit diff review and risk-matched verification.
+
+## Current local difference
+
+At this baseline, the only local delta is documentation and product identity:
+
+- the repository is named **Lin API**;
+- `README.md` contains a small Lin API header;
+- the complete upstream README from the accepted base remains byte-for-byte unchanged below that header;
+- this file records the canonical upstream relationship and local-delta policy.
+
+Future implementation changes must update `local_deltas` only when they become real. Planned work is not recorded as an active delta.
+
+## Update workflow
+
+1. Fetch the exact candidate revision from `upstream` without executing repository-provided hooks or lifecycle scripts.
+2. Compare the candidate against `accepted_base` and every active invariant/local delta.
+3. Prepare a focused branch or pull request; do not force-sync `main`.
+4. Run the candidate's relevant build/tests plus focused Lin API regression checks.
+5. Require human review for user-visible behavior, authentication, billing, pricing, routing, database migrations, branding/attribution, or deployment effects.
+6. Merge source changes separately from any deployment, restart, data migration, or production cutover authorization.
+7. After acceptance, update `accepted_base` to the exact immutable upstream commit and read back the public fork state.
+
+## Licensing and attribution
+
+Lin API remains licensed under the repository's [GNU AGPLv3 license](LICENSE). Modified user interfaces must preserve the upstream Section 7 author-attribution notice and a visible link to the original project as stated in the upstream README. Lin API branding is additive and must not obscure upstream authorship or imply that this fork is official.
+
+## Private operational boundary
+
+Secrets, API keys, private infrastructure, live pricing state, user data, and deployment receipts do not belong in this public repository. They remain in the appropriate private runtime and operations sources. This repository contains source and public maintenance metadata only.

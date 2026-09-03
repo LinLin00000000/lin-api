@@ -1,3 +1,29 @@
+<!-- lin-api:local-header:start -->
+<div align="center">
+
+# Lin API
+
+**Lin 的私域 AI 网关 / A personally maintained downstream fork of New API**
+
+</div>
+
+> [!NOTE]
+> **Lin API** 是基于 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的个人二开项目，并非 New API 官方发行版，也不代表上游维护者背书。
+>
+> Lin API is a personal downstream fork of New API. It is not an official New API distribution and does not imply upstream endorsement.
+
+- **当前范围 / Current scope:** 私域 AI 模型网关、模型与价格迁移，以及后续的小步二开。
+- **上游与本地差异 / Upstream & local deltas:** [UPSTREAM.md](./UPSTREAM.md)
+- **许可证与署名 / License & attribution:** 继续遵循仓库中的 AGPLv3、Section 7 署名要求及原项目可见链接要求。
+- **更新原则 / Update policy:** README 头部只保留稳定摘要；所有真实本地差异记录在 `UPSTREAM.md`，部署与源码合并分开授权。
+
+当前基线只增加 Lin API 身份与二开维护说明，尚未改变运行行为。以下为接受基线中的上游 README，内容原样保留，方便后续同步与审阅。
+
+---
+
+## Upstream README（原样保留 / preserved verbatim）
+
+<!-- lin-api:local-header:end -->
 <div align="center">
 
 ![new-api](/web/public/logo.png)
