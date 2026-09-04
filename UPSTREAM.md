@@ -40,6 +40,15 @@ validation:
   required_refs: ['README suffix byte comparison against accepted base', 'git diff --check', 'focused tests for each future runtime delta']
 deployment_impact:
   policy_ref: 'Deployment requires a separate, explicit change window and runtime verification.'
+  release_policy_ref: 'AIOS upstream-reconciliation release contract: build-once/deploy-by-digest; merge, build, staging, production promotion, migration, and rollback are separate gates.'
+  runbook_ref: 'Private OPS/service runbook owns runtime paths, deployment commands, and current state.'
+release:
+  artifact_identity: immutable-container-image-digest
+  build_input: exact-source-commit
+  production_source_mount: forbidden
+  promotion: separate-human-or-environment-gate
+  rollback: previous-known-good-artifact-and-compatible-config
+  ui_api_coupling: 'web/dist is embedded into the Go binary by the production Docker build; frontend and backend promote and rollback atomically.'
 ---
 
 # Lin API upstream adoption
@@ -70,6 +79,19 @@ Future implementation changes must update `local_deltas` only when they become r
 5. Require human review for user-visible behavior, authentication, billing, pricing, routing, database migrations, branding/attribution, or deployment effects.
 6. Merge source changes separately from any deployment, restart, data migration, or production cutover authorization.
 7. After acceptance, update `accepted_base` to the exact immutable upstream commit and read back the public fork state.
+
+## Release and production promotion
+
+The source repository and production runtime are deliberately separate:
+
+- Development may use a live checkout and a local frontend dev server; production must not mount a changing source tree.
+- Build from an exact source commit and identify the resulting production artifact by an immutable container-image digest. A branch, `latest`, or a successful build message is not the production identity.
+- Merging or pushing this repository, passing CI, and building an image do not deploy, restart, migrate data, change DNS, or expose an endpoint.
+- Promote only the exact artifact that passed the required staging smoke/Invariant checks, through a separate Human/environment gate.
+- This accepted layout embeds `web/dist` into the Go binary, so the frontend and backend are one atomic promotion and rollback unit. Splitting them later requires an explicit compatibility, health, and rollback contract.
+- Runtime configuration, domains, database connections, and secrets remain outside the public artifact and are supplied by the private environment/Secret Runtime.
+- A private release receipt binds `source_commit`, `artifact_digest`, runtime configuration revision, migration revision or `none`, promotion approval, and `previous_known_good`. It must not contain secret values or private infrastructure details.
+- Rollback targets the exact previous-known-good artifact and compatible configuration. Irreversible migrations or uncertain data state return to Human review.
 
 ## Licensing and attribution
 
