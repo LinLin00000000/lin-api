@@ -74,7 +74,7 @@ The documentation and product-identity delta remains narrow:
 - the complete upstream README from the accepted base remains byte-for-byte unchanged below that header;
 - this file records the canonical upstream relationship and local-delta policy.
 
-The downstream also owns the CI/image-publishing delta D002. The `Lin API image` workflow runs on main pushes or an explicit main/dev dispatch. It checks the exact source, publishes only `linux/amd64` to the downstream GHCR namespace, and verifies the artifact without paid API calls. Known documentation-only pushes skip the application build. Unused upstream Docker Hub, desktop, and release workflows are disabled in the downstream repository's Actions settings; their upstream source files remain available for future reconciliation.
+The downstream also owns the CI/image-publishing delta D002. The `Lin API image` workflow runs on `main` or `dev` pushes, or an explicit main/dev dispatch. It checks the exact source, publishes only `linux/amd64` to the downstream GHCR namespace, and verifies the artifact without paid API calls. Known documentation-only pushes skip the application build. GitHub publishes the image; hosts pull it by digest. Unused upstream Docker Hub, desktop, and release workflows are disabled in the downstream repository's Actions settings; their upstream source files remain available for future reconciliation.
 
 Future implementation changes must update `local_deltas` only when they become real. Planned work is not recorded as an active delta.
 
