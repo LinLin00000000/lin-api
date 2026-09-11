@@ -36,6 +36,12 @@ local_deltas:
     invariant_refs: [INV-001, INV-002]
     realization_refs: ['README.md', 'UPSTREAM.md', 'docs/development-and-release.md']
     retire_when: 'Lin API is retired or returns to an unmodified upstream distribution.'
+  - id: D002
+    intent: 'Build checked downstream images in GHCR from exact main or dev commits using the existing Dockerfile.'
+    behavior_scope: 'Downstream CI, document-only change detection, native amd64 image publishing and isolated non-billable artifact smoke; private deployment remains outside this repository.'
+    invariant_refs: [INV-001, INV-002, INV-003]
+    realization_refs: ['.github/workflows/ci.yml', '.github/workflows/docker-image-branch.yml', '.github/scripts/runtime_changed.py']
+    retire_when: 'The downstream no longer operates its own image publishing flow.'
 validation:
   required_refs: ['README suffix byte comparison against accepted base', 'git diff --check', 'focused tests for each future runtime delta']
 deployment_impact:
@@ -61,12 +67,14 @@ The initial accepted base is commit [`36dbbf0f77e710455e745048f4a32e8120ad3fd2`]
 
 ## Current local difference
 
-At this baseline, the only local delta is documentation and product identity:
+The documentation and product-identity delta remains narrow:
 
 - the repository is named **Lin API**;
 - `README.md` contains a small Lin API header;
 - the complete upstream README from the accepted base remains byte-for-byte unchanged below that header;
 - this file records the canonical upstream relationship and local-delta policy.
+
+The downstream also owns the CI/image-publishing delta D002. The `Lin API image` workflow runs on main pushes or an explicit main/dev dispatch. It checks the exact source, publishes only `linux/amd64` to the downstream GHCR namespace, and verifies the artifact without paid API calls. Known documentation-only pushes skip the application build. Unused upstream Docker Hub, desktop, and release workflows are disabled in the downstream repository's Actions settings; their upstream source files remain available for future reconciliation.
 
 Future implementation changes must update `local_deltas` only when they become real. Planned work is not recorded as an active delta.
 
