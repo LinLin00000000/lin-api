@@ -13,9 +13,10 @@
 > Lin API is a personal downstream fork of New API. It is not an official New API distribution and does not imply upstream endorsement.
 
 - **当前范围 / Current scope:** 私域 AI 模型网关、模型与价格迁移，以及后续的小步二开。
+- **开发、测试与发布 / Development & release:** [项目流程](./docs/development-and-release.md)
 - **上游与本地差异 / Upstream & local deltas:** [UPSTREAM.md](./UPSTREAM.md)
 - **许可证与署名 / License & attribution:** 继续遵循仓库中的 AGPLv3、Section 7 署名要求及原项目可见链接要求。
-- **更新原则 / Update policy:** README 头部只保留稳定摘要；所有真实本地差异记录在 `UPSTREAM.md`，部署与源码合并分开授权。
+- **更新原则 / Update policy:** README 头部只保留稳定摘要；所有真实本地差异记录在 `UPSTREAM.md`，合入主线后的发布遵循项目流程，源码合并不等于生产已生效。
 
 当前基线只增加 Lin API 身份与二开维护说明，尚未改变运行行为。以下为接受基线中的上游 README，内容原样保留，方便后续同步与审阅。
 

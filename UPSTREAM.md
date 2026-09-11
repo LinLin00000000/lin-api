@@ -18,7 +18,7 @@ policy:
   offer_schedule_after_baseline: true
   product_posture: upstream-first-with-quality-floor
   max_automation: A2
-  human_required_if: [risk>=R2, behavioral-conflict, behavioral-unknown, delta-scope-change, delta-retirement, invariant-change, product-tradeoff, production-deploy]
+  human_required_if: [risk>=R2, behavioral-conflict, behavioral-unknown, delta-scope-change, delta-retirement, invariant-change, product-tradeoff, production-deploy-outside-project-policy]
 invariants:
   - id: INV-001
     statement: 'Preserve the upstream AGPLv3 license, required author attribution notice, and visible link to the original New API project.'
@@ -27,26 +27,26 @@ invariants:
     statement: 'Keep local changes narrow, auditable, and separable from upstream content so upstream updates remain reviewable.'
     validation_refs: ['README.md', 'UPSTREAM.md', 'git diff upstream/main...main']
   - id: INV-003
-    statement: 'Repository changes never imply authorization to deploy, restart, migrate data, or expose a production service.'
-    validation_refs: ['UPSTREAM.md']
+    statement: 'Production deployment requires the explicit project release policy; repository changes never authorize arbitrary restarts, data migration, or public exposure.'
+    validation_refs: ['UPSTREAM.md', 'docs/development-and-release.md']
 local_deltas:
   - id: D001
     intent: 'Present the downstream product as Lin API while retaining clear upstream provenance and an update-friendly README layout.'
-    behavior_scope: 'Repository identity and documentation only; no runtime behavior change at this baseline.'
+    behavior_scope: 'Repository identity, maintenance documentation and Agent workflow policy; no runtime code change.'
     invariant_refs: [INV-001, INV-002]
-    realization_refs: ['README.md', 'UPSTREAM.md']
+    realization_refs: ['README.md', 'UPSTREAM.md', 'docs/development-and-release.md']
     retire_when: 'Lin API is retired or returns to an unmodified upstream distribution.'
 validation:
   required_refs: ['README suffix byte comparison against accepted base', 'git diff --check', 'focused tests for each future runtime delta']
 deployment_impact:
-  policy_ref: 'Deployment requires a separate, explicit change window and runtime verification.'
+  policy_ref: 'docs/development-and-release.md; accepted main merges authorize the next maintenance window, subject to verification and migration gates.'
   release_policy_ref: 'AIOS upstream-reconciliation release contract: build-once/deploy-by-digest; merge, build, staging, production promotion, migration, and rollback are separate gates.'
   runbook_ref: 'Private OPS/service runbook owns runtime paths, deployment commands, and current state.'
 release:
   artifact_identity: immutable-container-image-digest
   build_input: exact-source-commit
   production_source_mount: forbidden
-  promotion: separate-human-or-environment-gate
+  promotion: project-policy-and-environment-gate
   rollback: previous-known-good-artifact-and-compatible-config
   ui_api_coupling: 'web/dist is embedded into the Go binary by the production Docker build; frontend and backend promote and rollback atomically.'
 ---
@@ -82,12 +82,14 @@ Future implementation changes must update `local_deltas` only when they become r
 
 ## Release and production promotion
 
+The project-specific source of truth is [Development and release](docs/development-and-release.md). Its standing release authorization replaces per-version approval within the declared scope; runtime automation is not enabled merely by documenting it.
+
 The source repository and production runtime are deliberately separate:
 
-- Development may use a live checkout and a local frontend dev server; production must not mount a changing source tree.
+- DEV preview and production use the same complete Docker build by default; no HMR is required. Production must not mount a changing source tree.
 - Build from an exact source commit and identify the resulting production artifact by an immutable container-image digest. A branch, `latest`, or a successful build message is not the production identity.
-- Merging or pushing this repository, passing CI, and building an image do not deploy, restart, migrate data, change DNS, or expose an endpoint.
-- Promote only the exact artifact that passed the required staging smoke/Invariant checks, through a separate Human/environment gate.
+- An authorized main merge grants next-window production promotion under [the project policy](docs/development-and-release.md), but is not evidence of deployment. Other pushes/builds do not grant production access; migrations, DNS changes and exposure remain independently bounded.
+- Promote only the exact artifact that passed required isolated smoke/Invariant checks and the project-policy/environment gate. DEV serves as acceptance preview; no third persistent staging environment is required.
 - This accepted layout embeds `web/dist` into the Go binary, so the frontend and backend are one atomic promotion and rollback unit. Splitting them later requires an explicit compatibility, health, and rollback contract.
 - Runtime configuration, domains, database connections, and secrets remain outside the public artifact and are supplied by the private environment/Secret Runtime.
 - A private release receipt binds `source_commit`, `artifact_digest`, runtime configuration revision, migration revision or `none`, promotion approval, and `previous_known_good`. It must not contain secret values or private infrastructure details.
