@@ -34,7 +34,7 @@ local_deltas:
     intent: 'Present the downstream product as Lin API while retaining clear upstream provenance and an update-friendly README layout.'
     behavior_scope: 'Repository identity, maintenance documentation and Agent workflow policy; no runtime code change.'
     invariant_refs: [INV-001, INV-002]
-    realization_refs: ['README.md', 'UPSTREAM.md', 'docs/development-and-release.md']
+    realization_refs: ['README.md', 'UPSTREAM.md', 'docs/development-and-release.md', 'AGENTS.md']
     retire_when: 'Lin API is retired or returns to an unmodified upstream distribution.'
   - id: D002
     intent: 'Build checked downstream images in GHCR from exact main or dev commits using the existing Dockerfile.'
@@ -71,10 +71,11 @@ The documentation and product-identity delta remains narrow:
 
 - the repository is named **Lin API**;
 - `README.md` contains a small Lin API header;
+- `AGENTS.md` has a small Lin API workflow pointer above the preserved upstream conventions;
 - the complete upstream README from the accepted base remains byte-for-byte unchanged below that header;
 - this file records the canonical upstream relationship and local-delta policy.
 
-The downstream also owns the CI/image-publishing delta D002. The `Lin API image` workflow runs on main pushes or an explicit main/dev dispatch. It checks the exact source, publishes only `linux/amd64` to the downstream GHCR namespace, and verifies the artifact without paid API calls. Known documentation-only pushes skip the application build. Unused upstream Docker Hub, desktop, and release workflows are disabled in the downstream repository's Actions settings; their upstream source files remain available for future reconciliation.
+The downstream also owns the CI/image-publishing delta D002. The `Lin API image` workflow runs on `main` or `dev` pushes, or an explicit main/dev dispatch. It checks the exact source, publishes only `linux/amd64` to the downstream GHCR namespace, and verifies the artifact without paid API calls. Known documentation-only pushes skip the application build. GitHub publishes the image; hosts pull it by digest. Unused upstream Docker Hub, desktop, and release workflows are disabled in the downstream repository's Actions settings; their upstream source files remain available for future reconciliation.
 
 Future implementation changes must update `local_deltas` only when they become real. Planned work is not recorded as an active delta.
 

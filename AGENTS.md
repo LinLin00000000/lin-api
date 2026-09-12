@@ -1,5 +1,13 @@
 # AGENTS.md — Project Conventions for new-api
 
+<!-- lin-api:local-header:start -->
+## Lin API workflow / Lin API 工作流
+
+This downstream fork uses [`docs/development-and-release.md`](docs/development-and-release.md) for development, preview, and release, and [`UPSTREAM.md`](UPSTREAM.md) for upstream deltas. Merge completed work to `dev` and refresh preview; do not merge to `main` or release production unless separately authorized.
+
+本下游仓库的开发、预览与发布以 `docs/development-and-release.md` 为准，上游差异以 `UPSTREAM.md` 为准。功能完成后合入 `dev` 并更新预览；未经单独授权不要合入 `main` 或发布生产。
+<!-- lin-api:local-header:end -->
+
 DO NOT send optional commentary
 
 ## Overview

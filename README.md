@@ -14,6 +14,7 @@
 
 - **当前范围 / Current scope:** 私域 AI 模型网关、模型与价格迁移，以及后续的小步二开。
 - **开发、测试与发布 / Development & release:** [项目流程](./docs/development-and-release.md)
+- **Agent 入口 / Agent entry:** 先读项目流程与 `UPSTREAM.md`。功能完成后合入 `dev` 并更新预览；未经单独授权不要合入 `main` 或发布生产。
 - **上游与本地差异 / Upstream & local deltas:** [UPSTREAM.md](./UPSTREAM.md)
 - **许可证与署名 / License & attribution:** 继续遵循仓库中的 AGPLv3、Section 7 署名要求及原项目可见链接要求。
 - **更新原则 / Update policy:** README 头部只保留稳定摘要；所有真实本地差异记录在 `UPSTREAM.md`，合入主线后的发布遵循项目流程，源码合并不等于生产已生效。
