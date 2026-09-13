@@ -1349,8 +1349,8 @@ func (m *mockAdaptor) FetchTask(string, string, *model.Task, string) (*http.Resp
 func (m *mockAdaptor) ParseTaskResult(*model.Task, *http.Response, []byte) (*relaycommon.TaskInfo, error) {
 	return nil, nil
 }
-func (m *mockAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
-	return m.adjustReturn
+func (m *mockAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) (int, bool) {
+	return m.adjustReturn, m.adjustReturn > 0
 }
 
 // ===========================================================================

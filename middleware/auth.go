@@ -45,6 +45,10 @@ func validUserInfo(username string, role int) bool {
 }
 
 func authHelper(c *gin.Context, minRole int) {
+	authHelperWithAdmission(c, minRole, nil)
+}
+
+func authHelperWithAdmission(c *gin.Context, minRole int, admit func(*gin.Context, *model.UserBase) bool) {
 	user, identity, useAccessToken, err := authenticateDashboardRequest(c)
 	if err != nil {
 		writeDashboardAuthError(c, err)
@@ -63,6 +67,9 @@ func authHelper(c *gin.Context, minRole int) {
 		return
 	}
 	setDashboardAuthContext(c, user, identity, useAccessToken)
+	if admit != nil && !admit(c, user) {
+		return
+	}
 
 	// 管理/root 写操作审计兜底：内聚在鉴权链路里，保证任何经过 AdminAuth/RootAuth
 	// 的写接口都会自动留痕（无需在路由上单独挂审计中间件，避免漏挂）。
@@ -352,6 +359,12 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 }
 
 func TokenAuth() func(c *gin.Context) {
+	return TokenAuthWithIdentitySnapshot(model.IdentityServiceSettings.Snapshot)
+}
+
+// TokenAuthWithIdentitySnapshot binds an explicit immutable provider at router
+// construction. It never accepts configuration from an HTTP request.
+func TokenAuthWithIdentitySnapshot(provider service.IdentitySnapshotProvider) func(c *gin.Context) {
 	return func(c *gin.Context) {
 		// 先检测是否为ws
 		if c.Request.Header.Get("Sec-WebSocket-Protocol") != "" {
@@ -457,6 +470,31 @@ func TokenAuth() func(c *gin.Context) {
 		}
 
 		userCache.WriteContext(c)
+
+		if provider != nil {
+			snapshot := provider()
+			if snapshot != nil && snapshot.Config().Mode == "identity_service" {
+				if err = SetupContextForToken(c, token, parts...); err != nil {
+					return
+				}
+				request := service.FreezeIdentityRequest(c, snapshot, token.UserId, userCache.Group)
+				group := token.Group
+				if group == "" {
+					group = userCache.Group
+				}
+				// Historical reads retain full Key/user validation above and owner
+				// scoping in their handlers, but not today's service admission.
+				// Dynamic bindings may defer product admission only until their
+				// trusted decoder runs; PrepareTaskPluginRoute gates every submit.
+				if !IsIdentityTaskRead(c) && !identityDynamicPreparation(c) && ((group == "auto" && len(request.AutoGroups()) == 0) || (group != "auto" && !request.ServiceAllowed(group))) {
+					abortWithOpenAiMessage(c, http.StatusForbidden, "identity/service group access denied")
+					return
+				}
+				common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
+				c.Next()
+				return
+			}
+		}
 
 		userGroup := userCache.Group
 		tokenGroup := token.Group

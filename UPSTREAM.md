@@ -42,6 +42,18 @@ local_deltas:
     invariant_refs: [INV-001, INV-002, INV-003]
     realization_refs: ['.github/workflows/ci.yml', '.github/workflows/docker-image-branch.yml', '.github/scripts/runtime_changed.py']
     retire_when: 'The downstream no longer operates its own image publishing flow.'
+  - id: D003
+    intent: 'Preserve per-group, physical-model, channel routing priorities across channel management operations.'
+    behavior_scope: 'Stage A source candidate: transactional Ability reconciliation, consistent cache/DB selection, revision-checked channel editing and explicit committed/degraded management feedback; not deployed and no identity/service pricing activation.'
+    invariant_refs: [INV-001, INV-002, INV-003]
+    realization_refs: ['model/channel_route_transaction.go', 'model/channel_cache.go', 'controller/channel_priority.go', 'web/src/features/channels/components/model-routing.tsx', 'docs/channel/model-routing.md']
+    retire_when: 'Upstream provides equivalent persistence, concurrency and management-feedback semantics with passing downstream regressions.'
+  - id: D004
+    intent: 'Separate account identity and service tier for explicit authorization and frozen billing quotes.'
+    behavior_scope: 'Versioned draft configuration, sparse factors, request authorization, durable billing snapshots and management/current/historical quote UI. Runtime mode remains legacy; storage rejects identity_service activation.'
+    invariant_refs: [INV-001, INV-002, INV-003]
+    realization_refs: ['pkg/identityservice/foundation.go', 'model/identity_service_setting.go', 'service/identity_billing.go', 'service/identity_durable_billing.go', 'service/identity_activation.go', 'web/src/features/system-settings/billing/identity-service/', 'docs/identity-service.md']
+    retire_when: 'Upstream offers equivalent authorization, frozen billing and migration safety with passing downstream regressions.'
 validation:
   required_refs: ['README suffix byte comparison against accepted base', 'git diff --check', 'focused tests for each future runtime delta']
 deployment_impact:
@@ -75,6 +87,8 @@ The documentation and product-identity delta remains narrow:
 - this file records the canonical upstream relationship and local-delta policy.
 
 The downstream also owns the CI/image-publishing delta D002. The `Lin API image` workflow runs on main pushes or an explicit main/dev dispatch. It checks the exact source, publishes only `linux/amd64` to the downstream GHCR namespace, and verifies the artifact without paid API calls. Known documentation-only pushes skip the application build. Unused upstream Docker Hub, desktop, and release workflows are disabled in the downstream repository's Actions settings; their upstream source files remain available for future reconciliation.
+
+D003 records the implemented, not-yet-deployed Stage A routing candidate. See [model routing semantics and client compatibility](docs/channel/model-routing.md) for the priority source of truth, revision requirement, committed/degraded responses, test scope and rollout gates. It does not activate the later identity/service pricing mode.
 
 Future implementation changes must update `local_deltas` only when they become real. Planned work is not recorded as an active delta.
 

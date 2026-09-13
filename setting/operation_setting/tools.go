@@ -213,6 +213,28 @@ func GetToolPriceForModel(toolName, modelName string) float64 {
 	return 0
 }
 
+// SnapshotToolPricesForModel detaches all possible tool prices from one published
+// index, including tools not yet reported by upstream. Missing names remain zero.
+func SnapshotToolPricesForModel(modelName string) map[string]float64 {
+	idx := currentIndex.Load()
+	prices := map[string]float64{}
+	if idx == nil {
+		return prices
+	}
+	for name, price := range idx.defaults {
+		prices[name] = price
+	}
+	for name, entries := range idx.prefixes {
+		for _, entry := range entries {
+			if modelName != "" && strings.HasPrefix(modelName, entry.prefix) {
+				prices[name] = entry.price
+				break
+			}
+		}
+	}
+	return prices
+}
+
 // GetToolPrice is a convenience wrapper when no model name is needed.
 func GetToolPrice(toolName string) float64 {
 	return GetToolPriceForModel(toolName, "")

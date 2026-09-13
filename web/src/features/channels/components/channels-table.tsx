@@ -75,7 +75,6 @@ const CHANNELS_STATUS_FILTER_STORAGE_KEY = 'channel-status-filter'
 const CHANNEL_SORTABLE_COLUMNS = new Set<ChannelSortBy>([
   'id',
   'name',
-  'priority',
   'balance',
   'response_time',
   'test_time',

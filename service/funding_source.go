@@ -78,12 +78,13 @@ func (w *WalletFunding) Refund() error {
 // ---------------------------------------------------------------------------
 
 type SubscriptionFunding struct {
-	requestId      string
-	userId         int
-	modelName      string
-	amount         int64 // 预扣的订阅额度（subConsume）
-	subscriptionId int
-	preConsumed    int64
+	allowZeroReserve bool // New identity billing may reserve exactly zero, then settle tool usage.
+	requestId        string
+	userId           int
+	modelName        string
+	amount           int64 // 预扣的订阅额度（subConsume）
+	subscriptionId   int
+	preConsumed      int64
 	// 以下字段在 PreConsume 成功后填充，供 RelayInfo 同步使用
 	AmountTotal     int64
 	AmountUsedAfter int64
@@ -95,7 +96,11 @@ func (s *SubscriptionFunding) Source() string { return BillingSourceSubscription
 
 func (s *SubscriptionFunding) PreConsume(_ int) error {
 	// amount 参数被忽略，使用内部 s.amount（已在构造时根据 preConsumedQuota 计算）
-	res, err := model.PreConsumeUserSubscription(s.requestId, s.userId, s.modelName, 0, s.amount)
+	preConsume := model.PreConsumeUserSubscription
+	if s.allowZeroReserve {
+		preConsume = model.PreConsumeUserSubscriptionAllowZero
+	}
+	res, err := preConsume(s.requestId, s.userId, s.modelName, 0, s.amount)
 	if err != nil {
 		return err
 	}
@@ -118,8 +123,15 @@ func (s *SubscriptionFunding) Settle(delta int) error {
 	return model.PostConsumeUserSubscriptionDelta(s.subscriptionId, int64(delta))
 }
 
+// needsRefund also recognizes a successfully bound identity zero receipt.
+// subscriptionId is populated only after PreConsume succeeds; legacy keeps its
+// positive-amount boundary. A later reserve does not change the initial receipt.
+func (s *SubscriptionFunding) needsRefund() bool {
+	return s.preConsumed > 0 || (s.allowZeroReserve && s.subscriptionId > 0 && s.preConsumed == 0)
+}
+
 func (s *SubscriptionFunding) Refund() error {
-	if s.preConsumed <= 0 {
+	if !s.needsRefund() {
 		return nil
 	}
 	return refundWithRetry(func() error {

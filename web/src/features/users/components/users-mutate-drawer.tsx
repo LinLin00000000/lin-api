@@ -71,6 +71,7 @@ import {
 } from '@/lib/admin-permissions'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { formatQuota, parseQuotaFromDollars } from '@/lib/format'
+import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -78,7 +79,7 @@ import {
   createUser,
   updateUser,
   getUser,
-  getGroups,
+  getUserIdentityOptions,
   getPermissionCatalog,
 } from '../api'
 import { BINDING_FIELDS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
@@ -89,7 +90,7 @@ import {
   transformFormDataToPayload,
   transformUserToFormDefaults,
 } from '../lib'
-import { type User } from '../types'
+import type { User } from '../types'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
 
@@ -111,14 +112,14 @@ export function UsersMutateDrawer({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
 
-  // Fetch groups
-  const { data: groupsData } = useQuery({
-    queryKey: ['groups'],
-    queryFn: getGroups,
-    staleTime: 5 * 60 * 1000,
+  const { data: identityOptions, isError: identityOptionsError } = useQuery({
+    queryKey: ['user-identity-options'],
+    queryFn: getUserIdentityOptions,
+    enabled: open,
+    staleTime: 0,
   })
 
-  const groups = groupsData?.data || []
+  const groups = identityOptions?.identities || []
 
   // Permission catalog is owned by the backend; fetched once and reused.
   const { data: permissionCatalog = EMPTY_PERMISSION_CATALOG } = useQuery({
@@ -136,11 +137,13 @@ export function UsersMutateDrawer({
   useEffect(() => {
     if (open && isUpdate && currentRow) {
       // For update, fetch fresh data
-      getUser(currentRow.id).then((result) => {
-        if (result.success && result.data) {
-          form.reset(transformUserToFormDefaults(result.data))
-        }
-      })
+      getUser(currentRow.id)
+        .then((result) => {
+          if (result.success && result.data) {
+            form.reset(transformUserToFormDefaults(result.data))
+          }
+        })
+        .catch(handleServerError)
     } else if (open && !isUpdate) {
       // For create, reset to defaults
       form.reset(USER_FORM_DEFAULT_VALUES)
@@ -195,7 +198,7 @@ export function UsersMutateDrawer({
               : t(ERROR_MESSAGES.CREATE_FAILED))
         )
       }
-    } catch (_error) {
+    } catch {
       toast.error(t(ERROR_MESSAGES.UNEXPECTED))
     } finally {
       setIsSubmitting(false)
@@ -241,6 +244,20 @@ export function UsersMutateDrawer({
               onSubmit={form.handleSubmit(onSubmit)}
               className={sideDrawerFormClassName()}
             >
+              {identityOptions && (
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'To onboard a friend: first create a Common User, then edit the user and select the configured Friend identity. The friend must sign in and create their own API key; administrators must not issue keys on their behalf. Assigning an identity does not activate identity billing.'
+                  )}
+                </p>
+              )}
+              {identityOptionsError && (
+                <p role='alert' className='text-destructive text-sm'>
+                  {t(
+                    'Failed to load user identities. Close and reopen to retry.'
+                  )}
+                </p>
+              )}
               {/* Basic Information */}
               <SideDrawerSection>
                 <h3 className='text-sm font-medium'>
@@ -278,7 +295,8 @@ export function UsersMutateDrawer({
                             { value: '10', label: t('Admin') },
                           ]}
                           onValueChange={(value) =>
-                            value !== null && field.onChange(parseInt(value))
+                            value !== null &&
+                            field.onChange(Number.parseInt(value))
                           }
                           value={String(field.value)}
                         >
@@ -351,27 +369,36 @@ export function UsersMutateDrawer({
               {/* Group & Quota Settings (Update only) */}
               {isUpdate && (
                 <SideDrawerSection>
-                  <h3 className='text-sm font-medium'>{t('Group & Quota')}</h3>
+                  <h3 className='text-sm font-medium'>
+                    {t('Identity & Quota')}
+                  </h3>
 
                   <FormField
                     control={form.control}
                     name='group'
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>{t('Group')}</FormLabel>
+                        <FormLabel>{t('Identity')}</FormLabel>
                         <Select
-                          items={[
-                            ...groups.map((group) => ({
-                              value: group,
-                              label: group,
-                            })),
-                          ]}
-                          onValueChange={field.onChange}
+                          items={groups.map((group) => ({
+                            value: group,
+                            label: group,
+                          }))}
+                          disabled={
+                            !identityOptions ||
+                            identityOptionsError ||
+                            groups.length === 0
+                          }
+                          onValueChange={(value) =>
+                            value !== null && field.onChange(value)
+                          }
                           value={field.value}
                         >
                           <FormControl>
                             <SelectTrigger>
-                              <SelectValue placeholder={t('Select a group')} />
+                              <SelectValue
+                                placeholder={t('Select an identity')}
+                              />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent alignItemWithTrigger={false}>

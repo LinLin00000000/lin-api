@@ -170,63 +170,6 @@ function UpstreamUpdateTags({ channel }: { channel: Channel }) {
   )
 }
 
-/**
- * Priority cell component with inline editing
- */
-function PriorityCell({ channel }: { channel: Channel }) {
-  if (isTagAggregateRow(channel)) {
-    return <TagPriorityCell channel={channel} />
-  }
-
-  return (
-    <ChannelFieldCell
-      channelId={channel.id}
-      value={channel.priority}
-      field='priority'
-      min={-999}
-    />
-  )
-}
-
-function TagPriorityCell({ channel }: { channel: TagRow }) {
-  const { t } = useTranslation()
-  const queryClient = useQueryClient()
-  const priority = channel.priority
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [pendingValue, setPendingValue] = useState<number | null>(null)
-  const tag = channel.tag || ''
-  const channelCount = channel.children?.length || 0
-
-  return (
-    <>
-      <NumericSpinnerInput
-        value={priority ?? 0}
-        onChange={(value) => {
-          setPendingValue(value)
-          setConfirmOpen(true)
-        }}
-        min={-999}
-      />
-      <ConfirmDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        title={t('Confirm Batch Update')}
-        desc={t(
-          'This will update the priority to {{value}} for all {{count}} channel(s) with tag "{{tag}}". Continue?',
-          { value: pendingValue, count: channelCount, tag }
-        )}
-        confirmText={t('Update')}
-        handleConfirm={() => {
-          if (pendingValue !== null) {
-            handleUpdateTagField(tag, 'priority', pendingValue, queryClient)
-          }
-          setConfirmOpen(false)
-        }}
-      />
-    </>
-  )
-}
-
 function ChannelFieldCell({
   channelId,
   value,
@@ -1108,15 +1051,6 @@ export function useChannelsColumns(
         },
         size: 120,
         enableSorting: false,
-      },
-
-      // Priority column
-      {
-        accessorKey: 'priority',
-        header: t('Priority'),
-        meta: { mobileHidden: true },
-        cell: ({ row }) => <PriorityCell channel={row.original} />,
-        size: 100,
       },
 
       // Weight column

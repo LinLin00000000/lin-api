@@ -55,6 +55,12 @@ func PrepareTaskPluginRoute() gin.HandlerFunc {
 			abortTaskPluginRouteErrorDetail(c, http.StatusInternalServerError, "")
 			return
 		}
+		if service.RequestIdentity(c) != nil {
+			if _, trusted := identityPinnedRoute(c); !trusted {
+				abortTaskPluginRouteErrorDetail(c, http.StatusForbidden, "untrusted plugin route binding")
+				return
+			}
+		}
 		c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{
 			Generation: pinned.Generation,
 			Plugin:     pinned.Plugin,
@@ -213,6 +219,26 @@ func PrepareTaskPluginRoute() gin.HandlerFunc {
 				)
 				abortTaskPluginRouteErrorDetail(c, http.StatusBadRequest, fmt.Sprintf("model %q is not allowed on this route", modelName))
 				return
+			}
+			// Phase two: a decoder cannot turn deferred read preparation into
+			// new work without the same immutable model/service authorization.
+			// Run before origin lookup or any downstream submit handler, including
+			// derived actions which may skip initial channel selection.
+			if request := service.RequestIdentity(c); request != nil {
+				group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+				allowed := request.Authorize(group, modelName) == nil
+				if group == "auto" {
+					for _, candidate := range request.AutoGroups() {
+						if request.Authorize(candidate, modelName) == nil {
+							allowed = true
+							break
+						}
+					}
+				}
+				if !allowed {
+					abortTaskPluginRouteErrorDetail(c, http.StatusForbidden, "identity/service model access denied")
+					return
+				}
 			}
 			action := pinned.Route.Action
 			if resolvedAction, present := resolved["action"]; present {

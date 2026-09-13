@@ -45,6 +45,28 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		// Owner-scoped historical reads do not select a new product/channel.
+		// Protocol preparation and each consumer's existing owner checks still run.
+		if IsIdentityTaskRead(c) {
+			c.Next()
+			return
+		}
+		if request := service.RequestIdentity(c); request != nil && shouldSelectChannel {
+			group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+			allowed := request.Authorize(group, modelRequest.Model) == nil
+			if group == "auto" {
+				for _, g := range request.AutoGroups() {
+					if request.Authorize(g, modelRequest.Model) == nil {
+						allowed = true
+						break
+					}
+				}
+			}
+			if !allowed {
+				abortWithOpenAiMessage(c, http.StatusForbidden, "identity/service model access denied")
+				return
+			}
+		}
 		if pin, found, overridden := constraints.ResolvedPin(); found {
 			for _, lost := range overridden {
 				logger.LogWarn(c, fmt.Sprintf(
@@ -80,7 +102,7 @@ func Distribute() func(c *gin.Context) {
 			// Select a channel for the user
 			// check token model mapping
 			modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
-			if modelLimitEnable {
+			if modelLimitEnable && service.RequestIdentity(c) == nil {
 				s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 				if !ok {
 					// token model limit is empty, all models are not allowed
@@ -107,7 +129,7 @@ func Distribute() func(c *gin.Context) {
 				var selectGroup string
 				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 				// check path is /pg/chat/completions
-				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
+				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") && service.RequestIdentity(c) == nil {
 					playgroundRequest := &dto.PlayGroundRequest{}
 					err = common.UnmarshalBodyReusable(c, playgroundRequest)
 					if err != nil {
@@ -136,7 +158,7 @@ func Distribute() func(c *gin.Context) {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetRequestAutoGroups(c, userGroup)
 							for _, g := range autoGroups {
-								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+								if service.AuthorizeRequestModel(c, g, modelRequest.Model) == nil && model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 									channel = preferred
@@ -145,7 +167,7 @@ func Distribute() func(c *gin.Context) {
 									break
 								}
 							}
-						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
+						} else if service.AuthorizeRequestModel(c, usingGroup, modelRequest.Model) == nil && model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
 							channel = preferred
 							selectGroup = usingGroup
 							affinityUsable = true
@@ -196,7 +218,14 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		if service.RequestIdentity(c) == nil {
+			SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		} else if channel != nil {
+			if setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model); setupErr != nil {
+				abortWithOpenAiMessage(c, http.StatusForbidden, setupErr.Error())
+				return
+			}
+		}
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
@@ -402,6 +431,9 @@ func getJSONStringValue(result gjson.Result, field string) (string, error) {
 }
 
 func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
+	if service.RequestIdentity(c) != nil && strings.HasPrefix(c.Request.URL.Path, "/v1/realtime") {
+		return &ModelRequest{Model: c.Query("model")}, true, nil
+	}
 	var modelRequest ModelRequest
 	shouldSelectChannel := true
 	var err error
@@ -541,7 +573,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		}
 		c.Set("relay_mode", relayMode)
 	}
-	if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
+	if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") && service.RequestIdentity(c) == nil {
 		// playground chat completions
 		req, err := getModelFromRequest(c)
 		if err != nil {
@@ -577,6 +609,11 @@ func getTaskOriginModelName(c *gin.Context) string {
 }
 
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
+	if channel != nil {
+		if err := service.AuthorizeSelectedRequestChannel(c, modelName, channel.Id); err != nil {
+			return types.NewError(err, types.ErrorCodeAccessDenied, types.ErrOptionWithSkipRetry())
+		}
+	}
 	c.Set("original_model", modelName) // for retry
 	expectedPlugin := c.GetString("expected_task_plugin_key")
 	if channel == nil {

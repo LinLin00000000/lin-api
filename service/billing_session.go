@@ -138,8 +138,8 @@ func (s *BillingSession) needsRefundLocked() bool {
 	if s.tokenConsumed > 0 {
 		return true
 	}
-	// 订阅可能在 tokenConsumed=0 时仍预扣了额度
-	if sub, ok := s.funding.(*SubscriptionFunding); ok && sub.preConsumed > 0 {
+	// 订阅可能在 tokenConsumed=0 时仍有预扣额度或有效的 identity 零 receipt。
+	if sub, ok := s.funding.(*SubscriptionFunding); ok && sub.needsRefund() {
 		return true
 	}
 	return false
@@ -296,7 +296,7 @@ func (s *BillingSession) reserveToken(delta int) error {
 // shouldTrust 统一信任额度检查，适用于钱包和订阅。
 func (s *BillingSession) shouldTrust(c *gin.Context) bool {
 	// 异步任务（ForcePreConsume=true）必须预扣全额，不允许信任旁路
-	if s.relayInfo.ForcePreConsume {
+	if s.relayInfo.ForcePreConsume || s.relayInfo.IdentityBilling != nil {
 		return false
 	}
 
@@ -393,16 +393,17 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 
 	trySubscription := func() (*BillingSession, *types.NewAPIError) {
 		subConsume := int64(preConsumedQuota)
-		if subConsume <= 0 {
+		if subConsume <= 0 && relayInfo.IdentityBilling == nil {
 			subConsume = 1
 		}
 		session := &BillingSession{
 			relayInfo: relayInfo,
 			funding: &SubscriptionFunding{
-				requestId: relayInfo.RequestId,
-				userId:    relayInfo.UserId,
-				modelName: relayInfo.GetBillingModelName(),
-				amount:    subConsume,
+				requestId:        relayInfo.RequestId,
+				userId:           relayInfo.UserId,
+				modelName:        relayInfo.GetBillingModelName(),
+				amount:           subConsume,
+				allowZeroReserve: relayInfo.IdentityBilling != nil,
 			},
 		}
 		// 必须传 subConsume 而非 preConsumedQuota，保证 SubscriptionFunding.amount、

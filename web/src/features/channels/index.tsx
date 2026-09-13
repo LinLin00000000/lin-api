@@ -19,15 +19,22 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Settings2 } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import {
+  hasPermission,
+  ADMIN_PERMISSION_RESOURCES,
+  ADMIN_PERMISSION_ACTIONS,
+} from '@/lib/admin-permissions'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -36,9 +43,17 @@ import { ChannelsDialogs } from './components/channels-dialogs'
 import { ChannelsPrimaryButtons } from './components/channels-primary-buttons'
 import { ChannelsProvider } from './components/channels-provider'
 import { ChannelsTable } from './components/channels-table'
+import { ModelRouting } from './components/model-routing'
 
 export function Channels() {
   const { t } = useTranslation()
+  const [routing, setRouting] = useState(false)
+  const user = useAuthStore((state) => state.auth.user)
+  const canWrite = hasPermission(
+    user,
+    ADMIN_PERMISSION_RESOURCES.CHANNEL,
+    ADMIN_PERMISSION_ACTIONS.WRITE
+  )
   const isRoot = useAuthStore(
     (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
   )
@@ -97,7 +112,23 @@ export function Channels() {
           <ChannelsPrimaryButtons />
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>
-          <ChannelsTable />
+          <div className='mb-3 flex gap-2'>
+            <Button
+              variant={routing ? 'outline' : 'default'}
+              aria-pressed={!routing}
+              onClick={() => setRouting(false)}
+            >
+              {t('Channels')}
+            </Button>
+            <Button
+              variant={routing ? 'default' : 'outline'}
+              aria-pressed={routing}
+              onClick={() => setRouting(true)}
+            >
+              {t('Model routing')}
+            </Button>
+          </div>
+          {routing ? <ModelRouting canWrite={canWrite} /> : <ChannelsTable />}
         </SectionPageLayout.Content>
       </SectionPageLayout>
 

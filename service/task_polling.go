@@ -29,8 +29,9 @@ type TaskPollingAdaptor interface {
 	FetchTask(baseURL string, key string, task *model.Task, proxy string) (*http.Response, error)
 	ParseTaskResult(task *model.Task, resp *http.Response, body []byte) (*relaycommon.TaskInfo, error)
 	// AdjustBillingOnComplete 在任务到达终态（成功/失败）时由轮询循环调用。
-	// 返回正数触发差额结算（补扣/退还），返回 0 保持预扣费金额不变。
-	AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) int
+	// present distinguishes explicit zero from no adjustment. For identity tasks,
+	// quota is host base quota before S*D (not supplier credits or a new current price).
+	AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) (quota int, present bool)
 }
 
 type BatchTaskPollingAdaptor interface {
@@ -118,6 +119,27 @@ func sweepTimedOutTasks(ctx context.Context) {
 	}
 }
 
+// failIdentityTaskLocally uses the existing terminal CAS/refund protocol for
+// infrastructure failures too; legacy bulk behavior is intentionally unchanged.
+func failIdentityTaskLocally(ctx context.Context, task *model.Task, reason string) bool {
+	if task == nil || task.PrivateData.BillingContext == nil || task.PrivateData.BillingContext.IdentityQuote == nil {
+		return false
+	}
+	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
+		return true
+	}
+	old := task.Status
+	task.Status, task.Progress, task.FailReason = model.TaskStatusFailure, "100%", reason
+	task.FinishTime = time.Now().Unix()
+	won, err := task.UpdateWithStatus(old)
+	if err != nil {
+		logger.LogError(ctx, "Task local terminal CAS: "+err.Error())
+	} else if won && task.Quota != 0 {
+		RefundTaskQuota(ctx, task, reason)
+	}
+	return true
+}
+
 // TaskPollSummary is the result recorded on an async_task_poll system task row,
 // summarizing one polling pass.
 type TaskPollSummary struct {
@@ -169,6 +191,10 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 		for _, task := range tasks {
 			upstreamID := task.GetUpstreamTaskID()
 			if upstreamID == "" {
+				if failIdentityTaskLocally(ctx, task, "missing upstream task id") {
+					summary.NullTasksFailed++
+					continue
+				}
 				// 统计失败的未完成任务
 				nullTaskIds = append(nullTaskIds, task.ID)
 				continue
@@ -250,6 +276,9 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		var failedIDs []int64
 		for _, upstreamID := range taskIds {
 			if t, ok := taskM[upstreamID]; ok {
+				if failIdentityTaskLocally(ctx, t, fmt.Sprintf("Failed to get channel info, channel ID: %d", channelId)) {
+					continue
+				}
 				failedIDs = append(failedIDs, t.ID)
 			}
 		}
@@ -426,6 +455,9 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 		var failedIDs []int64
 		for _, upstreamID := range taskIds {
 			if t, ok := taskM[upstreamID]; ok {
+				if failIdentityTaskLocally(ctx, t, fmt.Sprintf("Failed to get channel info, channel ID: %d", channelId)) {
+					continue
+				}
 				failedIDs = append(failedIDs, t.ID)
 			}
 		}
@@ -664,6 +696,26 @@ func truncateBase64(s string) string {
 //
 // 表达式求值失败会保留预扣额度，因此也视为已接管，避免错误全退。
 func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) bool {
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.IdentityQuote != nil {
+		if task.Status == model.TaskStatusFailure {
+			return false
+		}
+		actual, present := adaptor.AdjustBillingOnComplete(task, taskResult)
+		if present {
+			copy := *taskResult
+			copy.ActualQuota = &actual
+			taskResult = &copy
+		}
+		quota, known, err := IdentityTaskTerminalQuota(bc, taskResult)
+		if err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("task %s frozen settlement rejected, retained estimate: %v", task.TaskID, err))
+			return true
+		}
+		if known {
+			RecalculateTaskQuota(ctx, task, quota, "frozen identity task settlement")
+		}
+		return known
+	}
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.TieredSnapshot != nil {
 		// 用量表达式结算只适用于成功任务；失败任务由调用方全额退款。
 		if task.Status == model.TaskStatusFailure {
@@ -695,7 +747,10 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 		return false
 	}
 	// 优先让 adaptor 决定最终额度。
-	if actualQuota := adaptor.AdjustBillingOnComplete(task, taskResult); actualQuota > 0 {
+	if actualQuota, present := adaptor.AdjustBillingOnComplete(task, taskResult); present && actualQuota >= 0 {
+		if bc := task.PrivateData.BillingContext; bc != nil && bc.IdentityQuote != nil {
+			actualQuota, _ = common.QuotaFromFloatChecked(float64(actualQuota) * bc.IdentityQuote.Components["multiplier"].Effective)
+		}
 		RecalculateTaskQuota(ctx, task, actualQuota, "adaptor计费调整")
 		return true
 	}

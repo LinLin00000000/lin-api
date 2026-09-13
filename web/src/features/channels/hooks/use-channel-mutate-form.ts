@@ -37,10 +37,14 @@ import {
 import type { Channel } from '../types'
 
 type UseChannelMutateFormParams = {
-  currentRow?: Channel | null
-  isEditing: boolean
-  isMultiKeyChannel: boolean
   onSuccess: () => void
+}
+
+export type ChannelMutationSnapshot = {
+  data: ChannelFormValues
+  target:
+    | { kind: 'create' }
+    | { kind: 'edit'; id: number; revision: string; isMultiKeyChannel: boolean }
 }
 
 const SENSITIVE_UPDATE_FIELDS = [
@@ -90,12 +94,12 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
   )
 
   return useMutation({
-    mutationFn: async (data: ChannelFormValues): Promise<string> => {
-      if (props.isEditing && props.currentRow) {
-        const payload = transformFormDataToUpdatePayload(
-          data,
-          props.currentRow.id
-        )
+    mutationFn: async ({
+      data,
+      target,
+    }: ChannelMutationSnapshot): Promise<string> => {
+      if (target.kind === 'edit') {
+        const payload = transformFormDataToUpdatePayload(data, target.id)
         if (!data.key?.trim()) {
           delete payload.key
         }
@@ -106,7 +110,7 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
         }
         const payloadWithKeyMode =
           canEditSensitive &&
-          props.isMultiKeyChannel &&
+          target.isMultiKeyChannel &&
           data.key?.trim() &&
           data.key_mode
             ? {
@@ -115,14 +119,16 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
               }
             : payload
 
-        const response = await updateChannel(
-          props.currentRow.id,
-          payloadWithKeyMode
-        )
+        const response = await updateChannel(target.id, {
+          ...payloadWithKeyMode,
+          revision: target.revision,
+        })
         if (!response.success) {
           throw new Error(response.message || t(ERROR_MESSAGES.UPDATE_FAILED))
         }
-        return SUCCESS_MESSAGES.UPDATED
+        return response.committed && response.degraded
+          ? ''
+          : SUCCESS_MESSAGES.UPDATED
       }
 
       const payload = transformFormDataToCreatePayload(data)
@@ -133,7 +139,7 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
       return SUCCESS_MESSAGES.CREATED
     },
     onSuccess: (messageKey) => {
-      toast.success(t(messageKey))
+      if (messageKey) toast.success(t(messageKey))
       props.onSuccess()
     },
     onError: (error: unknown) => {

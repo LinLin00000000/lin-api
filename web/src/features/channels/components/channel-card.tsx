@@ -72,7 +72,6 @@ function ChannelCardComponent({
   const nameCell = renderCell('name')
   const statusCell = renderCell('status')
   const actionsCell = renderCell('actions')
-  const priorityCell = renderCell('priority')
   const weightCell = renderCell('weight')
   const balanceCell = renderCell('balance')
   const responseCell = renderCell('response_time')
@@ -137,10 +136,8 @@ function ChannelCardComponent({
             grid with content-sized columns keeps Priority/Weight and
             Response/Last Tested aligned without wasting horizontal space. */}
           <div className='grid shrink-0 grid-cols-[auto_auto] items-center gap-x-3 gap-y-1'>
-            <span className={labelClass}>{t('Priority')}</span>
-            <span className={labelClass}>{t('Weight')}</span>
-            <div className='flex justify-start'>{priorityCell}</div>
-            <div className='flex justify-start'>{weightCell}</div>
+            <span className={cn('col-span-2', labelClass)}>{t('Weight')}</span>
+            <div className='col-span-2 flex justify-start'>{weightCell}</div>
             <span className={cn('mt-2', labelClass)}>
               {fieldLabels.response_time}
             </span>

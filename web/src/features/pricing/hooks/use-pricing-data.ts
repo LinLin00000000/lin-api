@@ -20,14 +20,21 @@ import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 
 import { useStatus } from '@/hooks/use-status'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { getPricing } from '../api'
 
 export function usePricingData(enabled = true) {
   const { status } = useStatus()
+  const auth = useAuthStore((state) => state.auth)
+  // The catalog is identity-scoped. Keep the public legacy catalog stable, but
+  // never let a prior user's/group's services survive an auth transition.
+  const catalogScope = auth.user
+    ? ['user', auth.user.id, auth.user.group ?? '', auth.generation]
+    : ['public']
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['pricing'],
+    queryKey: ['pricing', ...catalogScope],
     queryFn: getPricing,
     staleTime: 5 * 60 * 1000,
     enabled,

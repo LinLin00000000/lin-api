@@ -164,7 +164,8 @@ type RelayInfo struct {
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
 
-	PriceData hosttypes.PriceData
+	PriceData       hosttypes.PriceData
+	IdentityBilling *hosttypes.IdentityBilling
 
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
 	// supported single-request bound (or NaN fallback) while computing this request's charge.
@@ -1018,6 +1019,12 @@ func (t *TaskSubmitReq) UnmarshalMetadata(v any) error {
 }
 
 type TaskInfo struct {
+	// In-memory boundary marker, not plugin input or durable billing state.
+	// Even an absent/failed hook must not be re-run without its raw response.
+	CompletionUsageCaptured bool `json:"-"`
+	// Optional host-base quota from the adaptor, before S*D for identity tasks.
+	// Nil means absent; an explicit zero must settle to zero.
+	ActualQuota      *int            `json:"actual_quota,omitempty"`
 	Code             int             `json:"code"`
 	TaskID           string          `json:"task_id"`
 	Status           string          `json:"status"`

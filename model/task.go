@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/pkg/identityservice"
 	commonRelay "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 )
@@ -109,9 +110,13 @@ func (m Properties) Value() (driver.Value, error) {
 }
 
 type TaskPrivateData struct {
-	Key            string `json:"key,omitempty"`
-	UpstreamTaskID string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
-	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	// SettlementIncomplete marks accepted execution whose local usage validation
+	// failed. Its reserve is refunded by the submit session; automatic polling
+	// or recalculation must not turn this audit record into a new charge.
+	SettlementIncomplete bool   `json:"settlement_incomplete,omitempty"`
+	Key                  string `json:"key,omitempty"`
+	UpstreamTaskID       string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
+	ResultURL            string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
 	// Execution records safe, immutable request provenance. It lives next to
 	// other private task state so public task DTOs cannot expose it by accident.
 	Execution *TaskExecutionSnapshot `json:"execution,omitempty"`
@@ -157,6 +162,8 @@ type TaskPluginAuthorSnapshot struct {
 
 // TaskBillingContext 记录任务提交时的计费参数，以便轮询阶段可以重新计算额度。
 type TaskBillingContext struct {
+	// Nil means an explicitly legacy task. New quotes never re-resolve user/config prices.
+	IdentityQuote   *identityservice.FrozenQuote `json:"identity_quote,omitempty"`
 	ModelPrice      float64                      `json:"model_price,omitempty"`       // 模型单价
 	GroupRatio      float64                      `json:"group_ratio,omitempty"`       // 分组倍率
 	ModelRatio      float64                      `json:"model_ratio,omitempty"`       // 模型倍率
@@ -202,7 +209,7 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
 		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
-		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 {
+		!p.SettlementIncomplete && !p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 {
 		return nil, nil
 	}
 	// 同 Properties.Value:string 避免 PG simple protocol 的 bytea 编码。

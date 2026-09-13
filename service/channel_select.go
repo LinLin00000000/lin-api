@@ -131,6 +131,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 		for i := startGroupIndex; i < len(autoGroups); i++ {
 			autoGroup := autoGroups[i]
+			if AuthorizeRequestModel(param.Ctx, autoGroup, param.ModelName) != nil {
+				continue
+			}
 			// Calculate priorityRetry for current group
 			// 计算当前分组的 priorityRetry
 			priorityRetry := param.GetRetry()
@@ -184,6 +187,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
+		if err := AuthorizeRequestModel(param.Ctx, param.TokenGroup, param.ModelName); err != nil {
+			return nil, param.TokenGroup, err
+		}
 		channel, err = model.GetRandomSatisfiedChannel(
 			param.TokenGroup,
 			param.ModelName,

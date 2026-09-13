@@ -302,6 +302,9 @@ func GenerateClaudeOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 
 func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.PriceData) *model.LogOther {
 	other := model.NewLogOther()
+	if relayInfo.IdentityBilling != nil {
+		other.SetPublic("identity_billing_quote", relayInfo.IdentityBilling.Quote)
+	}
 	other.SetPublic("model_price", priceData.ModelPrice)
 	other.SetPublic("group_ratio", priceData.GroupRatioInfo.GroupRatio)
 	if priceData.GroupRatioInfo.HasSpecialRatio {

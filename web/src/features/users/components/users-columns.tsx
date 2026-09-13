@@ -174,7 +174,7 @@ export function useUsersColumns(): ColumnDef<User>[] {
     },
     {
       accessorKey: 'group',
-      header: t('Group'),
+      header: t('Identity'),
       cell: ({ row }) => {
         const group = row.getValue('group') as string
         return (

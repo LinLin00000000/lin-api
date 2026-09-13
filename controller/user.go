@@ -759,8 +759,11 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	recordManageAuditFor(c, updatedUser.Id, "user.update", map[string]interface{}{
-		"username": originUser.Username,
-		"id":       updatedUser.Id,
+		"username":     originUser.Username,
+		"id":           updatedUser.Id,
+		"group_before": originUser.Group,
+		"group_after":  updatedUser.Group,
+		"role":         updatedUser.Role,
 	})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

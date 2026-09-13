@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -258,19 +259,12 @@ func FetchUpstreamModels(c *gin.Context) {
 }
 
 func FixChannelsAbilities(c *gin.Context) {
-	success, fails, err := model.FixAbility()
+	success, fails, result, err := model.FixAbilityWithResult()
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data": gin.H{
-			"success": success,
-			"fails":   fails,
-		},
-	})
+	channelRouteResponse(c, result, nil, gin.H{"success": success, "fails": fails})
 }
 
 func SearchChannels(c *gin.Context) {
@@ -401,18 +395,15 @@ func GetChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	channel, err := model.GetChannelById(id, false)
+	channel, err := model.GetChannelById(id, true)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if channel != nil {
-		clearChannelInfo(channel)
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    channel,
+		"data":    channelEditData(channel),
 	})
 	return
 }
@@ -721,9 +712,9 @@ func AddChannel(c *gin.Context) {
 		}
 		channels = append(channels, *localChannel)
 	}
-	err = model.BatchInsertChannels(channels)
+	result, err := model.BatchInsertChannelsWithResult(channels)
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
 	recordManageAudit(c, "channel.create", map[string]interface{}{
@@ -731,10 +722,7 @@ func AddChannel(c *gin.Context) {
 		"type":  addChannelRequest.Channel.Type,
 		"count": len(channels),
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
+	channelRouteResponse(c, result, nil, nil)
 	return
 }
 
@@ -750,12 +738,11 @@ func DeleteChannel(c *gin.Context) {
 		channelLookupFailed = true
 	}
 	channel := model.Channel{Id: id}
-	err := channel.Delete()
+	result, err := channel.DeleteWithResult()
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	model.InitChannelCache()
 	if channelLookupFailed {
 		service.ResetProxyClientCache()
 	} else {
@@ -765,31 +752,23 @@ func DeleteChannel(c *gin.Context) {
 		"id":   id,
 		"name": channelName,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
+	channelRouteResponse(c, result, nil, nil)
 	return
 }
 
 func DeleteDisabledChannel(c *gin.Context) {
-	rows, err := model.DeleteDisabledChannel()
+	rows, result, err := model.DeleteDisabledChannelWithResult()
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	model.InitChannelCache()
 	if rows > 0 {
 		service.ResetProxyClientCache()
 	}
 	recordManageAudit(c, "channel.delete_disabled", map[string]interface{}{
 		"count": rows,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    rows,
-	})
+	channelRouteResponse(c, result, nil, rows)
 	return
 }
 
@@ -815,19 +794,15 @@ func DisableTagChannels(c *gin.Context) {
 		})
 		return
 	}
-	err = model.DisableChannelByTag(channelTag.Tag)
+	result, err := model.DisableChannelByTagWithResult(channelTag.Tag)
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	model.InitChannelCache()
 	recordManageAudit(c, "channel.tag_disable", map[string]interface{}{
 		"tag": channelTag.Tag,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
+	channelRouteResponse(c, result, nil, nil)
 	return
 }
 
@@ -841,19 +816,15 @@ func EnableTagChannels(c *gin.Context) {
 		})
 		return
 	}
-	err = model.EnableChannelByTag(channelTag.Tag)
+	result, err := model.EnableChannelByTagWithResult(channelTag.Tag)
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	model.InitChannelCache()
 	recordManageAudit(c, "channel.tag_enable", map[string]interface{}{
 		"tag": channelTag.Tag,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
+	channelRouteResponse(c, result, nil, nil)
 	return
 }
 
@@ -901,19 +872,15 @@ func EditTagChannels(c *gin.Context) {
 		}
 		channelTag.HeaderOverride = common.GetPointer[string](trimmed)
 	}
-	err = model.EditChannelByTag(channelTag.Tag, channelTag.NewTag, channelTag.ModelMapping, channelTag.Models, channelTag.Groups, channelTag.Priority, channelTag.Weight, channelTag.ParamOverride, channelTag.HeaderOverride)
+	result, err := model.EditChannelByTagWithResult(channelTag.Tag, channelTag.NewTag, channelTag.ModelMapping, channelTag.Models, channelTag.Groups, channelTag.Priority, channelTag.Weight, channelTag.ParamOverride, channelTag.HeaderOverride)
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	model.InitChannelCache()
 	recordManageAudit(c, "channel.tag_edit", map[string]interface{}{
 		"tag": channelTag.Tag,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
+	channelRouteResponse(c, result, nil, nil)
 	return
 }
 
@@ -932,23 +899,18 @@ func DeleteChannelBatch(c *gin.Context) {
 		})
 		return
 	}
-	deletedCount, err := model.BatchDeleteChannels(channelBatch.Ids)
+	deletedCount, result, err := model.BatchDeleteChannelsWithResult(channelBatch.Ids)
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	model.InitChannelCache()
 	if deletedCount > 0 {
 		service.ResetProxyClientCache()
 	}
 	recordManageAudit(c, "channel.delete_batch", map[string]interface{}{
 		"count": deletedCount,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    deletedCount,
-	})
+	channelRouteResponse(c, result, nil, deletedCount)
 	return
 }
 
@@ -981,6 +943,11 @@ func UpdateChannel(c *gin.Context) {
 	var requestData map[string]any
 	if err := common.Unmarshal(rawBody, &requestData); err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	revision, ok := requestData["revision"].(string)
+	if !ok || revision == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "committed": false, "degraded": false, "refresh_error": "", "message": "revision is required; refresh before saving"})
 		return
 	}
 	if _, ok := requestData["status"]; ok {
@@ -1117,12 +1084,11 @@ func UpdateChannel(c *gin.Context) {
 			// 覆盖模式：直接使用新密钥（默认行为，不需要特殊处理）
 		}
 	}
-	err = channel.Update()
+	result, err := channel.UpdateWithRevisionResult(revision)
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	model.InitChannelCache()
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
 	}
@@ -1148,13 +1114,7 @@ func UpdateChannel(c *gin.Context) {
 		"name":           channel.Name,
 		"changed_fields": changedFields,
 	})
-	channel.Key = ""
-	clearChannelInfo(&channel.Channel)
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    channel,
-	})
+	channelRouteResponse(c, result, nil, channelEditData(&channel.Channel))
 	return
 }
 
@@ -1169,20 +1129,17 @@ func UpdateChannelStatus(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	changed := model.UpdateChannelStatus(id, "", req.Status, "manual operation")
-	if changed {
-		model.InitChannelCache()
+	changed, result, err := model.UpdateChannelStatusWithResult(id, "", req.Status, "manual operation")
+	if err != nil {
+		channelRouteResponse(c, result, err, nil)
+		return
 	}
 	recordManageAudit(c, "channel.status_update", map[string]interface{}{
 		"id":      id,
 		"status":  req.Status,
 		"changed": changed,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    changed,
-	})
+	channelRouteResponse(c, result, nil, changed)
 }
 
 func BatchUpdateChannelStatus(c *gin.Context) {
@@ -1191,25 +1148,17 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	changedCount := 0
-	for _, id := range req.Ids {
-		if model.UpdateChannelStatus(id, "", req.Status, "manual batch operation") {
-			changedCount++
-		}
-	}
-	if changedCount > 0 {
-		model.InitChannelCache()
+	changedCount, result, err := model.BatchUpdateChannelStatusWithResult(req.Ids, req.Status)
+	if err != nil {
+		channelRouteResponse(c, result, err, nil)
+		return
 	}
 	recordManageAudit(c, "channel.status_update_batch", map[string]interface{}{
 		"count":  changedCount,
 		"total":  len(req.Ids),
 		"status": req.Status,
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    changedCount,
-	})
+	channelRouteResponse(c, result, nil, changedCount)
 }
 
 func isManageableChannelStatus(status int) bool {
@@ -1372,20 +1321,15 @@ func BatchSetChannelTag(c *gin.Context) {
 		})
 		return
 	}
-	err = model.BatchSetChannelTag(channelBatch.Ids, channelBatch.Tag)
+	result, err := model.BatchSetChannelTagWithResult(channelBatch.Ids, channelBatch.Tag)
 	if err != nil {
-		common.ApiError(c, err)
+		channelRouteResponse(c, result, err, nil)
 		return
 	}
-	model.InitChannelCache()
 	recordManageAudit(c, "channel.tag_batch_set", map[string]interface{}{
 		"count": len(channelBatch.Ids),
 	})
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    len(channelBatch.Ids),
-	})
+	channelRouteResponse(c, result, nil, len(channelBatch.Ids))
 	return
 }
 
@@ -1483,19 +1427,19 @@ func CopyChannel(c *gin.Context) {
 	}
 
 	// insert
-	if err := clone.Insert(); err != nil {
+	result, err := clone.CopyWithAbilitiesResult(id)
+	if err != nil {
 		common.SysError("failed to clone channel: " + err.Error())
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "复制渠道失败，请稍后重试"})
+		channelRouteResponse(c, result, errors.New("failed to copy channel"), nil)
 		return
 	}
-	model.InitChannelCache()
 	recordManageAudit(c, "channel.copy", map[string]interface{}{
 		"sourceId": id,
 		"id":       clone.Id,
 		"name":     clone.Name,
 	})
 	// success
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"id": clone.Id}})
+	channelRouteResponse(c, result, nil, gin.H{"id": clone.Id})
 }
 
 // MultiKeyManageRequest represents the request for multi-key management operations
@@ -1547,6 +1491,7 @@ func ManageMultiKeys(c *gin.Context) {
 		return
 	}
 
+	revision := model.ChannelRevision(channel)
 	if !channel.ChannelInfo.IsMultiKey {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -1719,16 +1664,15 @@ func ManageMultiKeys(c *gin.Context) {
 
 		channel.ChannelInfo.MultiKeyStatusList[keyIndex] = 2 // disabled
 
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
+		result, err := channel.UpdateWithRevisionResult(revision)
+		if err != nil || result.RefreshError != nil {
+			channelRouteResponse(c, result, err, nil)
 			return
 		}
-
-		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "密钥已禁用",
+			"success":   true,
+			"message":   "密钥已禁用",
+			"committed": result.Committed, "degraded": false, "refresh_error": "",
 		})
 		return
 
@@ -1761,16 +1705,15 @@ func ManageMultiKeys(c *gin.Context) {
 			delete(channel.ChannelInfo.MultiKeyDisabledReason, keyIndex)
 		}
 
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
+		result, err := channel.UpdateWithRevisionResult(revision)
+		if err != nil || result.RefreshError != nil {
+			channelRouteResponse(c, result, err, nil)
 			return
 		}
-
-		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "密钥已启用",
+			"success":   true,
+			"message":   "密钥已启用",
+			"committed": result.Committed, "degraded": false, "refresh_error": "",
 		})
 		return
 
@@ -1785,16 +1728,15 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyDisabledTime = make(map[int]int64)
 		channel.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
 
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
+		result, err := channel.UpdateWithRevisionResult(revision)
+		if err != nil || result.RefreshError != nil {
+			channelRouteResponse(c, result, err, nil)
 			return
 		}
-
-		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": fmt.Sprintf("已启用 %d 个密钥", enabledCount),
+			"success":   true,
+			"message":   fmt.Sprintf("已启用 %d 个密钥", enabledCount),
+			"committed": result.Committed, "degraded": false, "refresh_error": "",
 		})
 		return
 
@@ -1832,16 +1774,15 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
+		result, err := channel.UpdateWithRevisionResult(revision)
+		if err != nil || result.RefreshError != nil {
+			channelRouteResponse(c, result, err, nil)
 			return
 		}
-
-		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": fmt.Sprintf("已禁用 %d 个密钥", disabledCount),
+			"success":   true,
+			"message":   fmt.Sprintf("已禁用 %d 个密钥", disabledCount),
+			"committed": result.Committed, "degraded": false, "refresh_error": "",
 		})
 		return
 
@@ -1912,16 +1853,15 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
 		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
 
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
+		result, err := channel.UpdateWithRevisionResult(revision)
+		if err != nil || result.RefreshError != nil {
+			channelRouteResponse(c, result, err, nil)
 			return
 		}
-
-		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "密钥已删除",
+			"success":   true,
+			"message":   "密钥已删除",
+			"committed": result.Committed, "degraded": false, "refresh_error": "",
 		})
 		return
 
@@ -1980,17 +1920,16 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
 		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
 
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
+		result, err := channel.UpdateWithRevisionResult(revision)
+		if err != nil || result.RefreshError != nil {
+			channelRouteResponse(c, result, err, nil)
 			return
 		}
-
-		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": fmt.Sprintf("已删除 %d 个自动禁用的密钥", deletedCount),
-			"data":    deletedCount,
+			"success":   true,
+			"message":   fmt.Sprintf("已删除 %d 个自动禁用的密钥", deletedCount),
+			"committed": result.Committed, "degraded": false, "refresh_error": "",
+			"data": deletedCount,
 		})
 		return
 

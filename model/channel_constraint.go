@@ -3,8 +3,10 @@ package model
 import (
 	"slices"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 )
 
 var filterEvalOrder = []dto.ChannelFilterKind{
@@ -95,11 +97,25 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 		if ch.Type != constant.ChannelTypeAdvancedCustom {
 			return true
 		}
-		config := ch.GetOtherSettings().AdvancedCustom
+		// Selection is read-only and may hold the cache read lock. Never call
+		// accessors that repair malformed JSON by saving the channel here.
+		settings := kitdto.ChannelOtherSettings{}
+		if ch.OtherSettings != "" {
+			if err := common.UnmarshalJsonStr(ch.OtherSettings, &settings); err != nil {
+				return false
+			}
+		}
+		config := settings.AdvancedCustom
 		return config != nil && config.SupportsPathForModel(filter.RequestPath, modelName)
 	case dto.FilterTaskPluginIdentity:
 		if ch.Type == constant.ChannelTypeTaskPlugin {
-			return filter.TaskPluginKey != "" && ch.GetSetting().TaskPluginKey == filter.TaskPluginKey
+			settings := kitdto.ChannelSettings{}
+			if ch.Setting != nil && *ch.Setting != "" {
+				if err := common.UnmarshalJsonStr(*ch.Setting, &settings); err != nil {
+					return false
+				}
+			}
+			return filter.TaskPluginKey != "" && settings.TaskPluginKey == filter.TaskPluginKey
 		}
 		return filter.TaskPluginKey == "" || slices.Contains(filter.TaskPluginChannelTypes, ch.Type)
 	default:

@@ -152,7 +152,10 @@ import {
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../../constants'
-import { useChannelMutateForm } from '../../hooks/use-channel-mutate-form'
+import {
+  useChannelMutateForm,
+  type ChannelMutationSnapshot,
+} from '../../hooks/use-channel-mutate-form'
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
   CHANNEL_TYPE_ADVANCED_CUSTOM,
@@ -669,10 +672,17 @@ export function ChannelMutateDrawer({
   const sensitiveLocked = isEditing && !canEditSensitive
 
   // Fetch channel details if editing
-  const { data: channelData, isLoading: isChannelLoading } = useQuery({
+  const {
+    data: channelData,
+    isLoading: isChannelLoading,
+    isError: isChannelError,
+    refetch: refreshChannel,
+  } = useQuery({
     queryKey: channelsQueryKeys.detail(channelId || 0),
     queryFn: () => getChannel(channelId || 0),
-    enabled: isEditing && Boolean(channelId),
+    enabled: open && isEditing && Boolean(channelId),
+    refetchOnWindowFocus: false,
+    retry: false,
   })
 
   // Fetch available groups
@@ -1623,19 +1633,28 @@ export function ChannelMutateDrawer({
     }
   }, [])
 
+  const submissionGenerationRef = useRef(0)
+  const [submissionCancelled, setSubmissionCancelled] = useState(false)
+
+  // A confirmation belongs to one open drawer and one detail version. Cancel
+  // both dialogs before new details reset the form, or when its target closes.
   useEffect(() => {
     return () => {
-      if (statusCodeRiskResolveRef.current) {
-        statusCodeRiskResolveRef.current(false)
-        statusCodeRiskResolveRef.current = null
-      }
+      submissionGenerationRef.current += 1
+      const wasConfirming = Boolean(
+        statusCodeRiskResolveRef.current || missingModelsResolveRef.current
+      )
+      statusCodeRiskResolveRef.current?.(false)
+      statusCodeRiskResolveRef.current = null
+      missingModelsResolveRef.current?.('cancel')
+      missingModelsResolveRef.current = null
+      setStatusCodeRiskOpen(false)
+      setMissingModelsDialogOpen(false)
+      if (wasConfirming) setSubmissionCancelled(true)
     }
-  }, [])
+  }, [open, channelId, channelData])
 
   const channelMutation = useChannelMutateForm({
-    currentRow,
-    isEditing,
-    isMultiKeyChannel,
     onSuccess: handleSuccess,
   })
 
@@ -1643,7 +1662,26 @@ export function ChannelMutateDrawer({
 
   // Submit handler
   const onSubmit = useCallback(
-    async (data: ChannelFormValues) => {
+    async (values: ChannelFormValues) => {
+      const detail = channelData?.success ? channelData.data : undefined
+      if (isEditing && !detail) return
+      // Bind cloned values and their target/revision before any confirmation
+      // awaits. React Query's mutateAsync uses the latest mutation options.
+      const data = structuredClone(values)
+      const submission: ChannelMutationSnapshot = {
+        data,
+        target:
+          detail && isEditing
+            ? {
+                kind: 'edit',
+                id: detail.id,
+                revision: detail.revision ?? '',
+                isMultiKeyChannel,
+              }
+            : { kind: 'create' },
+      }
+      const generation = submissionGenerationRef.current
+      setSubmissionCancelled(false)
       // Validate key is required when creating
       if (!isEditing && !data.key?.trim()) {
         form.setError('key', {
@@ -1688,7 +1726,9 @@ export function ChannelMutateDrawer({
         )
         if (riskyRedirects.length > 0) {
           const confirmed = await confirmStatusCodeRisk(riskyRedirects)
-          if (!confirmed) return
+          if (!confirmed || generation !== submissionGenerationRef.current) {
+            return
+          }
         }
       }
 
@@ -1727,7 +1767,10 @@ export function ChannelMutateDrawer({
 
         if (shouldPromptMissing) {
           const confirmAction = await confirmMissingModelMappings(missingModels)
-          if (confirmAction === 'cancel') {
+          if (
+            confirmAction === 'cancel' ||
+            generation !== submissionGenerationRef.current
+          ) {
             return
           }
           if (confirmAction === 'add') {
@@ -1740,7 +1783,11 @@ export function ChannelMutateDrawer({
         }
       }
 
-      await channelMutation.mutateAsync(data)
+      try {
+        await channelMutation.mutateAsync(submission)
+      } catch {
+        // The mutation exposes the error inline and via toast. Keep edits open.
+      }
     },
     [
       isEditing,
@@ -1748,6 +1795,8 @@ export function ChannelMutateDrawer({
       form,
       confirmMissingModelMappings,
       confirmStatusCodeRisk,
+      channelData,
+      isMultiKeyChannel,
       channelMutation,
       t,
     ]
@@ -1958,6 +2007,39 @@ export function ChannelMutateDrawer({
             </Alert>
           )}
 
+          {submissionCancelled && (
+            <div role='alert' className='p-4'>
+              {t(
+                'Channel changed. Pending submission cancelled; review the refreshed values before saving.'
+              )}
+            </div>
+          )}
+          {isEditing &&
+            (channelMutation.isError ||
+              isChannelError ||
+              (channelData && !channelData.success)) && (
+              <div role='alert' className='p-4'>
+                <p>
+                  {channelMutation.error instanceof Error
+                    ? channelMutation.error.message
+                    : t(
+                        'Unable to load channel revision. Refresh before saving.'
+                      )}
+                </p>
+                <Button
+                  type='button'
+                  variant='outline'
+                  onClick={async () => {
+                    const result = await refreshChannel()
+                    if (result.data?.success && !result.isError) {
+                      channelMutation.reset()
+                    }
+                  }}
+                >
+                  {t('Refresh channel and discard edits')}
+                </Button>
+              </div>
+            )}
           <Form {...form}>
             <form
               id='channel-form'
@@ -3744,7 +3826,9 @@ export function ChannelMutateDrawer({
                                 name='priority'
                                 render={({ field }) => (
                                   <FormItem>
-                                    <FormLabel>{t('Priority')}</FormLabel>
+                                    <FormLabel>
+                                      {t('Default priority for new routes')}
+                                    </FormLabel>
                                     <FormControl>
                                       <Input
                                         type='number'
@@ -3756,7 +3840,9 @@ export function ChannelMutateDrawer({
                                       />
                                     </FormControl>
                                     <FormDescription>
-                                      {t(FIELD_DESCRIPTIONS.PRIORITY)}
+                                      {t(
+                                        'Only initializes newly added group/model routes. Existing route priorities are managed in Model routing.'
+                                      )}
                                     </FormDescription>
                                     <FormMessage />
                                   </FormItem>
@@ -4875,7 +4961,18 @@ export function ChannelMutateDrawer({
             >
               {t('Cancel')}
             </SheetClose>
-            <Button form='channel-form' type='submit' disabled={isSubmitting}>
+            <Button
+              form='channel-form'
+              type='submit'
+              disabled={
+                isSubmitting ||
+                (isEditing &&
+                  (isChannelLoading ||
+                    isChannelError ||
+                    !channelData?.success ||
+                    !channelData.data?.revision))
+              }
+            >
               {isSubmitting && (
                 <Loader2 className='mr-2 h-4 w-4 animate-spin' />
               )}

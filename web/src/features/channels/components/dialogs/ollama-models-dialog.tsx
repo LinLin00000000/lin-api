@@ -45,7 +45,7 @@ import {
   deleteOllamaModel,
   fetchModels as fetchModelsFromEndpoint,
   fetchUpstreamModels,
-  updateChannel,
+  updateChannelFields,
 } from '../../api'
 import { channelsQueryKeys, parseModelsString } from '../../lib'
 import {
@@ -207,7 +207,11 @@ export function OllamaModelsDialog({
         : [...new Set([...existingModels, ...selected])]
 
     try {
-      const res = await updateChannel(currentRow.id, { models: next.join(',') })
+      const res = await updateChannelFields(
+        currentRow.id,
+        { models: next.join(',') },
+        currentRow.models
+      )
       if (res.success) {
         toast.success(
           mode === 'replace'

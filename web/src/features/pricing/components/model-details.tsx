@@ -86,6 +86,7 @@ import type {
   PricingModel,
   TokenUnit,
 } from '../types'
+import { CurrentQuoteSection } from './current-quote-section'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
@@ -1039,7 +1040,7 @@ function GroupPricingSection(props: {
     })
     const formattedPricesByGroup = new Map(
       availableGroups.map((group) => {
-        const ratio = props.groupRatio[group] || 1
+        const ratio = props.groupRatio[group] ?? 1
         return [
           group,
           getDynamicFormattedPricesByTier(dynamicTiers, {
@@ -1060,7 +1061,7 @@ function GroupPricingSection(props: {
         <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <div className='space-y-3'>
           {availableGroups.map((group) => {
-            const ratio = props.groupRatio[group] || 1
+            const ratio = props.groupRatio[group] ?? 1
             const formattedPricesByTier =
               formattedPricesByGroup.get(group) ??
               new Map<DynamicPricingTier, Map<string, string>>()
@@ -1227,7 +1228,7 @@ function GroupPricingSection(props: {
             header: t('Ratio'),
             className: thClass,
             cellClassName: 'text-muted-foreground py-2.5 font-mono',
-            cell: (group) => `${props.groupRatio[group] || 1}x`,
+            cell: (group) => `${props.groupRatio[group] ?? 1}x`,
           },
           ...(isTokenBased
             ? [
@@ -1358,6 +1359,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
             />
           </section>
 
+          <CurrentQuoteSection key={props.model.model_name} model={props.model.model_name} services={getAvailableGroups(props.model, props.usableGroup)} />
           <ModelBackendDetailsSection model={props.model} />
         </TabsContent>
 

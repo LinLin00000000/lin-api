@@ -59,6 +59,8 @@ type submitResponse struct {
 	State     any         `json:"state"`
 }
 type taskResult struct {
+	UsageFacts       any     `json:"usageFacts"`
+	ActualQuota      *int    `json:"actualQuota"`
 	Code             int     `json:"code"`
 	TaskID           string  `json:"taskId"`
 	Status           string  `json:"status"`
@@ -191,16 +193,24 @@ func (a *TaskAdaptor) AdjustBillingOnSubmit(info *relaycommon.RelayInfo, taskDat
 	return ratios
 }
 
-func (a *TaskAdaptor) AdjustBillingOnComplete(task *model.Task, result *relaycommon.TaskInfo) int {
+func (a *TaskAdaptor) AdjustBillingOnComplete(task *model.Task, result *relaycommon.TaskInfo) (int, bool) {
+	if result.ActualQuota != nil {
+		return *result.ActualQuota, true
+	}
+	// Identity settlement consumes the response-bound extraction. Preserve the
+	// historical two-argument hook contract for legacy/direct callers.
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.IdentityQuote != nil && result.CompletionUsageCaptured {
+		return 0, false
+	}
 	if !a.hasHook(context.Background(), "extractUsageOnComplete") {
-		return 0
+		return 0, false
 	}
 	value, err := a.plugin.Engine.Call(context.Background(), "extractUsageOnComplete", jsonValue(task), jsonValue(result))
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	a.applyCompletionUsageFacts(result, value)
-	return 0
+	return 0, false
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
@@ -491,7 +501,30 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 	}
 	var immediate *relaycommon.TaskInfo
 	if parsed.Immediate != nil {
-		immediate = &relaycommon.TaskInfo{Code: parsed.Immediate.Code, TaskID: parsed.Immediate.TaskID, Status: parsed.Immediate.Status, Progress: parsed.Immediate.Progress, Reason: parsed.Immediate.Reason, Url: parsed.Immediate.URL, RemoteUrl: parsed.Immediate.RemoteURL}
+		if parsed.Immediate.TaskID == "" {
+			parsed.Immediate.TaskID = parsed.TaskID
+		}
+		immediate = &relaycommon.TaskInfo{ActualQuota: parsed.Immediate.ActualQuota, TotalTokens: positiveInt(parsed.Immediate.TotalTokens), CompletionTokens: positiveInt(parsed.Immediate.CompletionTokens), Code: parsed.Immediate.Code, TaskID: parsed.Immediate.TaskID, Status: parsed.Immediate.Status, Progress: parsed.Immediate.Progress, Reason: parsed.Immediate.Reason, Url: parsed.Immediate.URL, RemoteUrl: parsed.Immediate.RemoteURL}
+		if immediate.Status == model.TaskStatusSuccess && info.IdentityBilling != nil {
+			// Explicit completed facts take precedence over the optional hook.
+			// The hook has the same (context, result, raw body) contract as polling.
+			facts := parsed.Immediate.UsageFacts
+			if facts == nil && a.hasHook(c.Request.Context(), "extractUsageOnComplete") {
+				facts, err = a.plugin.Engine.Call(c.Request.Context(), "extractUsageOnComplete", a.submitContext(c, info), jsonValue(immediate), responseBody)
+				if err != nil {
+					return &channel.TaskSubmitResponse{UpstreamTaskID: immediate.TaskID, Immediate: immediate}, service.TaskErrorWrapper(err, "plugin_completion_usage_failed", http.StatusBadGateway)
+				}
+			}
+			values, usageErr := a.validatedCompletionUsageFacts(facts)
+			if usageErr != nil {
+				return &channel.TaskSubmitResponse{UpstreamTaskID: immediate.TaskID, Immediate: immediate}, service.TaskErrorWrapper(usageErr, "plugin_completion_usage_invalid", http.StatusBadGateway)
+			}
+			a.applyCompletionUsageFacts(immediate, values)
+			immediate.CompletionUsageCaptured = true
+			if info.IdentityBilling != nil && info.TieredBillingSnapshot != nil && len(values) == 0 && (immediate.ActualQuota == nil || *immediate.ActualQuota != 0) {
+				return &channel.TaskSubmitResponse{UpstreamTaskID: immediate.TaskID, Immediate: immediate}, service.TaskErrorWrapperLocal(fmt.Errorf("immediate expression completion requires usage facts"), "plugin_completion_usage_missing", http.StatusBadGateway)
+			}
+		}
 	}
 	logger.LogDebug(
 		c,
@@ -635,17 +668,18 @@ func (a *TaskAdaptor) ParseBatchResult(tasks []*model.Task, resp *http.Response,
 		return nil, err
 	}
 	var parsed []struct {
-		TaskID     string `json:"taskId"`
-		Action     string `json:"action"`
-		Status     string `json:"status"`
-		Progress   string `json:"progress"`
-		Reason     string `json:"reason"`
-		URL        string `json:"url"`
-		SubmitTime int64  `json:"submitTime"`
-		StartTime  int64  `json:"startTime"`
-		FinishTime int64  `json:"finishTime"`
-		Data       any    `json:"data"`
-		State      any    `json:"state"`
+		ActualQuota *int   `json:"actualQuota"`
+		TaskID      string `json:"taskId"`
+		Action      string `json:"action"`
+		Status      string `json:"status"`
+		Progress    string `json:"progress"`
+		Reason      string `json:"reason"`
+		URL         string `json:"url"`
+		SubmitTime  int64  `json:"submitTime"`
+		StartTime   int64  `json:"startTime"`
+		FinishTime  int64  `json:"finishTime"`
+		Data        any    `json:"data"`
+		State       any    `json:"state"`
 	}
 	if err = convert(value, &parsed); err != nil {
 		logger.LogDebug(context.Background(), "task_plugin subsystem=adaptor event=parse_batch_failed plugin=%q reason=invalid_result body_bytes=%d elapsed_ms=%d", a.plugin.Meta.Key, len(body), time.Since(started).Milliseconds())
@@ -657,7 +691,8 @@ func (a *TaskAdaptor) ParseBatchResult(tasks []*model.Task, resp *http.Response,
 		if strings.TrimSpace(item.TaskID) == "" {
 			continue
 		}
-		info := relaycommon.TaskInfo{TaskID: item.TaskID, Status: item.Status, Progress: item.Progress, Reason: item.Reason, Url: item.URL}
+		info := relaycommon.TaskInfo{ActualQuota: item.ActualQuota, TaskID: item.TaskID, Status: item.Status, Progress: item.Progress, Reason: item.Reason, Url: item.URL}
+		info.CompletionUsageCaptured = true
 		if item.State != nil {
 			pluginState, marshalErr := common.Marshal(item.State)
 			if marshalErr != nil || len(pluginState) > maxTaskPluginPersistedJSONBytes {
@@ -723,15 +758,17 @@ func (a *TaskAdaptor) ParseTaskResult(task *model.Task, resp *http.Response, bod
 		return nil, err
 	}
 	result := &relaycommon.TaskInfo{
-		Code:             parsed.Code,
-		TaskID:           parsed.TaskID,
-		Status:           parsed.Status,
-		Progress:         parsed.Progress,
-		Reason:           parsed.Reason,
-		Url:              parsed.URL,
-		RemoteUrl:        parsed.RemoteURL,
-		CompletionTokens: positiveInt(parsed.CompletionTokens),
-		TotalTokens:      positiveInt(parsed.TotalTokens),
+		CompletionUsageCaptured: true,
+		ActualQuota:             parsed.ActualQuota,
+		Code:                    parsed.Code,
+		TaskID:                  parsed.TaskID,
+		Status:                  parsed.Status,
+		Progress:                parsed.Progress,
+		Reason:                  parsed.Reason,
+		Url:                     parsed.URL,
+		RemoteUrl:               parsed.RemoteURL,
+		CompletionTokens:        positiveInt(parsed.CompletionTokens),
+		TotalTokens:             positiveInt(parsed.TotalTokens),
 	}
 	if pluginState, present := encodeReturnedPluginState(value); present {
 		if len(pluginState) > maxTaskPluginPersistedJSONBytes {

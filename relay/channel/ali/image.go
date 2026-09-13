@@ -47,7 +47,7 @@ func oaiImage2AliImageRequest(info *relaycommon.RelayInfo, request dto.ImageRequ
 		}
 	}
 
-	if strings.Contains(request.Model, "z-image") {
+	if info.IdentityBilling == nil && strings.Contains(request.Model, "z-image") {
 		// z-image 开启prompt_extend后，按2倍计费
 		if imageRequest.Parameters.PromptExtendValue() {
 			info.PriceData.AddOtherRatio("prompt_extend", 2)
@@ -60,7 +60,7 @@ func oaiImage2AliImageRequest(info *relaycommon.RelayInfo, request dto.ImageRequ
 	if imageRequest.Parameters.N < 0 || imageRequest.Parameters.N > dto.MaxImageN {
 		return nil, fmt.Errorf("parameters.n must be an integer between 1 and %d", dto.MaxImageN)
 	}
-	if imageRequest.Parameters.N != 0 {
+	if info.IdentityBilling == nil && imageRequest.Parameters.N != 0 {
 		info.PriceData.AddOtherRatio("n", float64(imageRequest.Parameters.N))
 	}
 

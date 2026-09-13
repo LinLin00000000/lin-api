@@ -136,7 +136,7 @@ func TestUpdateChannelRejectsStatusField(t *testing.T) {
 	ctx.Request = httptest.NewRequest(
 		http.MethodPut,
 		"/api/channel/",
-		bytes.NewBufferString(`{"id":1,"status":2}`),
+		bytes.NewBufferString(`{"id":1,"status":2,"revision":"validation-only"}`),
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")
 

@@ -91,7 +91,7 @@ func (BaseBilling) AdjustBillingOnSubmit(_ *relaycommon.RelayInfo, _ []byte) map
 	return nil
 }
 
-// AdjustBillingOnComplete returns 0 (keep pre-charged amount).
-func (BaseBilling) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
-	return 0
+// AdjustBillingOnComplete reports no actual-quota adjustment.
+func (BaseBilling) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) (int, bool) {
+	return 0, false
 }

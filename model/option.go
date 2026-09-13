@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/pkg/identityservice"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -198,12 +199,22 @@ func InitOptionMap() {
 }
 
 func loadOptionsFromDatabase() {
-	options, _ := AllOption()
+	options, loadErr := AllOption()
+	if loadErr != nil {
+		common.SysLog("failed to load options from database")
+		return
+	}
 	for _, option := range options {
+		if option.Key == identityservice.OptionKey {
+			continue
+		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
 			common.SysLog("failed to update option map: " + err.Error())
 		}
+	}
+	if err := IdentityServiceSettings.Refresh(); err != nil {
+		common.SysLog("failed to load identity/service configuration: " + err.Error())
 	}
 }
 
@@ -216,6 +227,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == identityservice.OptionKey {
+		return ErrIdentityServiceDedicatedAPI
+	}
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
@@ -286,6 +300,9 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if key == identityservice.OptionKey {
+		return ErrIdentityServiceDedicatedAPI
+	}
 	if key == retiredThemeOptionKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)

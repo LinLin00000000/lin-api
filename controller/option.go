@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/identityservice"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -133,6 +134,10 @@ func UpdateOption(c *gin.Context) {
 			"success": false,
 			"message": "无效的参数",
 		})
+		return
+	}
+	if option.Key == identityservice.OptionKey {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": model.ErrIdentityServiceDedicatedAPI.Error()})
 		return
 	}
 	switch option.Value.(type) {

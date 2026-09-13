@@ -380,11 +380,11 @@ func (a *terminalSettlementPollingAdaptor) ParseTaskResult(*model.Task, *http.Re
 	}, nil
 }
 
-func (a *terminalSettlementPollingAdaptor) AdjustBillingOnComplete(task *model.Task, _ *relaycommon.TaskInfo) int {
+func (a *terminalSettlementPollingAdaptor) AdjustBillingOnComplete(task *model.Task, _ *relaycommon.TaskInfo) (int, bool) {
 	close(a.started)
 	<-a.release
 	a.completed = true
-	return task.Quota
+	return task.Quota, true
 }
 
 func TestPluginProtocolBridgeBoundsDatabaseReadBelowHeartbeat(t *testing.T) {

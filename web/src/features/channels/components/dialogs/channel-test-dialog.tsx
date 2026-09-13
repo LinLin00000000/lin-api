@@ -87,7 +87,7 @@ import {
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { useIsMobile } from '@/hooks/use-mobile'
 
-import { updateChannel } from '../../api'
+import { updateChannelFields } from '../../api'
 import {
   channelsQueryKeys,
   formatResponseTime,
@@ -778,9 +778,13 @@ function ChannelTestDialogContent({
 
     setIsDeletingFailed(true)
     try {
-      const response = await updateChannel(currentRow.id, {
-        models: remaining.join(','),
-      })
+      const response = await updateChannelFields(
+        currentRow.id,
+        {
+          models: remaining.join(','),
+        },
+        currentRow.models
+      )
       if (response.success) {
         setRemovedModels((prev) => {
           const next = new Set(prev)
@@ -814,7 +818,14 @@ function ChannelTestDialogContent({
     } finally {
       setIsDeletingFailed(false)
     }
-  }, [currentRow.id, models, refreshChannelLists, t, testResults])
+  }, [
+    currentRow.id,
+    currentRow.models,
+    models,
+    refreshChannelLists,
+    t,
+    testResults,
+  ])
 
   const handleClose = useCallback(() => {
     resetState()
