@@ -202,6 +202,9 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "sour_base64_and_target_base64_is_required")
 	}
 	modelName := service.CovertMjpActionToModelName(constant.MjActionSwapFace)
+	if err := service.AuthorizeSelectedRequestChannel(c, modelName, c.GetInt("channel_id")); err != nil {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, "identity_service_denied")
+	}
 
 	priceData, err := helper.ModelPriceHelperPerCall(c, info)
 	if err != nil {
@@ -219,7 +222,15 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
-	if userQuota-priceData.Quota < 0 {
+	if info.IdentityBilling != nil {
+		info.PriceData = priceData
+		info.ForcePreConsume = true
+		if apiErr := service.PreConsumeDurableBilling(c, priceData.Quota, info); apiErr != nil {
+			return service.MidjourneyErrorWrapper(constant.MjRequestError, apiErr.Error())
+		}
+		defer info.Billing.Refund(c)
+	}
+	if info.IdentityBilling == nil && userQuota-priceData.Quota < 0 {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "quota_not_enough",
@@ -313,6 +324,15 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *dto.MidjourneyResponse {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "该任务所属渠道已被禁用")
 	}
 	c.Set("channel_id", originTask.ChannelId)
+	// Historical reads skip new-product distribution. Use only the channel
+	// recovered after the owner lookup, never the caller's Key or a new route.
+	if service.RequestIdentity(c) != nil {
+		key, _, keyErr := channel.GetNextEnabledKey()
+		if keyErr != nil {
+			return service.MidjourneyErrorWrapper(constant.MjRequestError, "get_channel_key_failed")
+		}
+		common.SetContextKey(c, constant.ContextKeyChannelKey, key)
+	}
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
 
 	requestURL := getMjRequestPath(c.Request.URL.String())
@@ -515,6 +535,9 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 
 	modelName := service.CovertMjpActionToModelName(midjRequest.Action)
+	if err := service.AuthorizeSelectedRequestChannel(c, modelName, c.GetInt("channel_id")); err != nil {
+		return service.MidjourneyErrorWrapper(constant.MjRequestError, "identity_service_denied")
+	}
 
 	priceData, err := helper.ModelPriceHelperPerCall(c, relayInfo)
 	if err != nil {
@@ -532,7 +555,15 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
-	if consumeQuota && userQuota-priceData.Quota < 0 {
+	if relayInfo.IdentityBilling != nil && consumeQuota {
+		relayInfo.PriceData = priceData
+		relayInfo.ForcePreConsume = true
+		if apiErr := service.PreConsumeDurableBilling(c, priceData.Quota, relayInfo); apiErr != nil {
+			return service.MidjourneyErrorWrapper(constant.MjRequestError, apiErr.Error())
+		}
+		defer relayInfo.Billing.Refund(c)
+	}
+	if relayInfo.IdentityBilling == nil && consumeQuota && userQuota-priceData.Quota < 0 {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "quota_not_enough",

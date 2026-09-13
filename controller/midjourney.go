@@ -27,6 +27,27 @@ type midjourneyPollSummary struct {
 	NullTasksFailed int `json:"null_tasks_failed"`
 }
 
+// failIdentityMidjourneyTask preserves the same terminal CAS/refund boundary
+// for locally detected failures. The bool selects the new branch, not success.
+func failIdentityMidjourneyTask(ctx context.Context, task *model.Midjourney, reason string) bool {
+	if task == nil || task.PrivateData.BillingContext == nil || task.PrivateData.BillingContext.IdentityQuote == nil {
+		return false
+	}
+	if task.Status == "SUCCESS" || task.Status == "FAILURE" {
+		return true
+	}
+	old := task.Status
+	task.Status, task.Progress, task.FailReason = "FAILURE", "100%", reason
+	task.FinishTime = time.Now().UnixMilli()
+	won, err := task.UpdateWithStatus(old)
+	if err != nil {
+		logger.LogError(ctx, "Midjourney local terminal CAS: "+err.Error())
+	} else if won && task.Quota != 0 {
+		service.RefundMidjourneyQuota(ctx, task, reason)
+	}
+	return true
+}
+
 // runMidjourneyTaskUpdateOnce performs one Midjourney polling pass synchronously.
 // It honors ctx cancellation (the system-task runner cancels it when the lease
 // is lost) and, when report is non-nil, reports progress as (processedChannels,
@@ -49,6 +70,10 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 	nullTaskIds := make([]int, 0)
 	for _, task := range tasks {
 		if task.MjId == "" {
+			if failIdentityMidjourneyTask(ctx, task, "missing upstream task id") {
+				summary.NullTasksFailed++
+				continue
+			}
 			// 统计失败的未完成任务
 			nullTaskIds = append(nullTaskIds, task.Id)
 			continue
@@ -57,7 +82,7 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], task.MjId)
 	}
 	if len(nullTaskIds) > 0 {
-		summary.NullTasksFailed = len(nullTaskIds)
+		summary.NullTasksFailed += len(nullTaskIds)
 		err := model.MjBulkUpdateByTaskIds(nullTaskIds, map[string]any{
 			"status":   "FAILURE",
 			"progress": "100%",
@@ -90,7 +115,17 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		midjourneyChannel, err := model.CacheGetChannel(channelId)
 		if err != nil {
 			logger.LogError(ctx, fmt.Sprintf("CacheGetChannel: %v", err))
-			err := model.MjBulkUpdate(taskIds, map[string]any{
+			reason := fmt.Sprintf("获取渠道信息失败，请联系管理员，渠道ID：%d", channelId)
+			legacyIDs := make([]string, 0, len(taskIds))
+			for _, id := range taskIds {
+				if !failIdentityMidjourneyTask(ctx, taskM[id], reason) {
+					legacyIDs = append(legacyIDs, id)
+				}
+			}
+			if len(legacyIDs) == 0 {
+				continue
+			}
+			err := model.MjBulkUpdate(legacyIDs, map[string]any{
 				"fail_reason": fmt.Sprintf("获取渠道信息失败，请联系管理员，渠道ID：%d", channelId),
 				"status":      "FAILURE",
 				"progress":    "100%",
@@ -201,6 +236,11 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 				task.VideoUrls = "" // 空值时清空字段
 			}
 
+			// Identity terminal status is authoritative even if the upstream omits
+			// progress or a failure message. Keep the historical legacy predicate.
+			if bc := task.PrivateData.BillingContext; bc != nil && bc.IdentityQuote != nil && (task.Status == "SUCCESS" || task.Status == "FAILURE") {
+				task.Progress = "100%"
+			}
 			shouldReturnQuota := false
 			if (task.Progress != "100%" && responseItem.FailReason != "") || (task.Progress == "100%" && task.Status == "FAILURE") {
 				logger.LogInfo(ctx, task.MjId+" 构建失败，"+task.FailReason)

@@ -1,11 +1,11 @@
 package model
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"gorm.io/gorm"
 )
 
 var group2model2channels map[string]map[string][]int // enabled channel
@@ -22,88 +23,150 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // channel2advancedCustomConfig caches parsed Advanced Custom (type 58) configs so
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*kitdto.AdvancedCustomConfig
+
+// Each candidate keeps its exact Ability key's priority, not Channel.Priority.
+type cachedRouteCandidate struct {
+	channelID int
+	priority  int64
+}
+
+var group2model2routeCandidates map[string]map[string][]cachedRouteCandidate
 var channelSyncLock sync.RWMutex
 
+// Preserve the last complete snapshot for diagnostics, but never route through
+// it after a failed refresh. Database fallback validates current eligibility.
+var channelCacheRefreshError error
+
+// Serialize loads as well as publication so an older refresh cannot replace a
+// newer snapshot. Readers continue using the last complete snapshot while loading.
+var channelCacheRefreshLock sync.Mutex
+
 func InitChannelCache() {
+	if err := RefreshChannelCache(); err != nil {
+		common.SysError(fmt.Sprintf("refresh channel cache failed: %v", err))
+	}
+}
+
+// RefreshChannelCache publishes only a complete, successful database snapshot.
+// A nil route map means no successful initial load, distinct from a healthy empty map.
+func RefreshChannelCache() error {
+	channelCacheRefreshLock.Lock()
+	defer channelCacheRefreshLock.Unlock()
+	return refreshChannelCacheLocked()
+}
+
+// Caller holds channelCacheRefreshLock, including any preceding route commit.
+func refreshChannelCacheLocked() (err error) {
+	defer func() {
+		channelSyncLock.Lock()
+		channelCacheRefreshError = err
+		channelSyncLock.Unlock()
+	}()
 	if !common.MemoryCacheEnabled {
 		InvalidatePricingCache()
 		rebuildTaskAliasView()
-		return
+		return nil
 	}
-	newChannelId2channel := make(map[int]*Channel)
-	newChannel2advancedCustomConfig := make(map[int]*kitdto.AdvancedCustomConfig)
+	if DB == nil {
+		return errors.New("channel cache database is not initialized")
+	}
 	var channels []*Channel
-	DB.Find(&channels)
+	var abilities []Ability
+	// Repeatable read keeps the two source tables from different commits from
+	// being combined. SQLite supplies its normal read-transaction snapshot.
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Find(&channels).Error; err != nil {
+			return fmt.Errorf("load channels: %w", err)
+		}
+		if err := tx.Where("enabled = ?", true).Find(&abilities).Error; err != nil {
+			return fmt.Errorf("load abilities: %w", err)
+		}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}); err != nil {
+		return err
+	}
+	newChannelId2channel := make(map[int]*Channel, len(channels))
+	newChannel2advancedCustomConfig := make(map[int]*kitdto.AdvancedCustomConfig)
 	for _, channel := range channels {
+		if channel == nil {
+			continue
+		}
 		newChannelId2channel[channel.Id] = channel
 		if channel.Type == constant.ChannelTypeAdvancedCustom {
-			if config := channel.GetOtherSettings().AdvancedCustom; config != nil {
-				newChannel2advancedCustomConfig[channel.Id] = config
-			}
-		}
-	}
-	var abilities []*Ability
-	DB.Find(&abilities)
-	groups := make(map[string]bool)
-	for _, ability := range abilities {
-		groups[ability.Group] = true
-	}
-	newGroup2model2channels := make(map[string]map[string][]int)
-	for group := range groups {
-		newGroup2model2channels[group] = make(map[string][]int)
-	}
-	for _, channel := range channels {
-		if channel.Status != common.ChannelStatusEnabled {
-			continue // skip disabled channels
-		}
-		groups := strings.Split(channel.Group, ",")
-		for _, group := range groups {
-			models := strings.Split(channel.Models, ",")
-			for _, model := range models {
-				if _, ok := newGroup2model2channels[group][model]; !ok {
-					newGroup2model2channels[group][model] = make([]int, 0)
+			settings := kitdto.ChannelOtherSettings{}
+			if channel.OtherSettings != "" {
+				if err := common.UnmarshalJsonStr(channel.OtherSettings, &settings); err != nil {
+					return fmt.Errorf("channel %d settings: %w", channel.Id, err)
 				}
-				newGroup2model2channels[group][model] = append(newGroup2model2channels[group][model], channel.Id)
+			}
+			if settings.AdvancedCustom != nil {
+				newChannel2advancedCustomConfig[channel.Id] = settings.AdvancedCustom
 			}
 		}
 	}
-
-	// sort by priority
-	for group, model2channels := range newGroup2model2channels {
-		for model, channels := range model2channels {
-			sort.Slice(channels, func(i, j int) bool {
-				return newChannelId2channel[channels[i]].GetPriority() > newChannelId2channel[channels[j]].GetPriority()
-			})
-			newGroup2model2channels[group][model] = channels
+	newCandidates := make(map[string]map[string][]cachedRouteCandidate)
+	newGroup2model2channels := make(map[string]map[string][]int)
+	for _, ability := range abilities {
+		channel := newChannelId2channel[ability.ChannelId]
+		if !ability.Enabled || channel == nil || channel.Status != common.ChannelStatusEnabled {
+			continue
+		}
+		if newCandidates[ability.Group] == nil {
+			newCandidates[ability.Group] = make(map[string][]cachedRouteCandidate)
+			newGroup2model2channels[ability.Group] = make(map[string][]int)
+		}
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		newCandidates[ability.Group][ability.Model] = append(newCandidates[ability.Group][ability.Model], cachedRouteCandidate{channelID: ability.ChannelId, priority: priority})
+	}
+	for group, models := range newCandidates {
+		for model, candidates := range models {
+			sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].priority > candidates[j].priority })
+			for _, candidate := range candidates {
+				newGroup2model2channels[group][model] = append(newGroup2model2channels[group][model], candidate.channelID)
+			}
 		}
 	}
-
 	channelSyncLock.Lock()
-	group2model2channels = newGroup2model2channels
-	//channelsIDM = newChannelId2channel
 	for i, channel := range newChannelId2channel {
 		if channel.ChannelInfo.IsMultiKey {
 			channel.Keys = channel.GetKeys()
 			if channel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
-				if oldChannel, ok := channelsIDM[i]; ok {
-					// 存在旧的渠道，如果是多key且轮询，保留轮询索引信息
-					if oldChannel.ChannelInfo.IsMultiKey && oldChannel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
-						channel.ChannelInfo.MultiKeyPollingIndex = oldChannel.ChannelInfo.MultiKeyPollingIndex
-					}
+				if oldChannel := channelsIDM[i]; channelCacheRefreshError == nil && oldChannel != nil && oldChannel.ChannelInfo.IsMultiKey && oldChannel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
+					channel.ChannelInfo.MultiKeyPollingIndex = oldChannel.ChannelInfo.MultiKeyPollingIndex
 				}
 			}
 		}
 	}
+	group2model2channels = newGroup2model2channels
+	group2model2routeCandidates = newCandidates
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
 	channelSyncLock.Unlock()
-	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
-	// GetPricing (holding updatePricingLock) nests channelSyncLock.RLock via
-	// loadPricingAdvancedCustomConfigs. channelSyncLock MUST be released before
-	// invalidating the pricing cache, otherwise the reversed order deadlocks.
+	// Pricing takes updatePricingLock before channelSyncLock: never invalidate
+	// while holding channelSyncLock (AB-BA deadlock).
 	InvalidatePricingCache()
 	rebuildTaskAliasView()
 	common.SysLog("channels synced from database")
+	return nil
+}
+
+// Caller holds channelSyncLock. Filtering must precede retry-tier selection.
+func cachedRouteCandidates(group, key, requestedModel string, filters []dto.ChannelFilter) []cachedRouteCandidate {
+	candidates := group2model2routeCandidates[group][key]
+	filtered := make([]cachedRouteCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		channel := channelsIDM[candidate.channelID]
+		if channel == nil || channel.Status != common.ChannelStatusEnabled {
+			continue
+		}
+		if ok, _ := ChannelSatisfiesFilters(channel, requestedModel, filters); ok {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }
 
 func SyncChannelCache(frequency int) {
@@ -126,63 +189,55 @@ func GetRandomSatisfiedChannel(
 	}
 
 	channelSyncLock.RLock()
+	if group2model2routeCandidates == nil {
+		channelSyncLock.RUnlock()
+		return nil, errors.New("channel cache has no successful snapshot")
+	}
+	if channelCacheRefreshError != nil {
+		channelSyncLock.RUnlock()
+		return GetChannel(group, model, retry, filters)
+	}
 	defer channelSyncLock.RUnlock()
 
-	// First, try to find channels with the exact model name.
-	channels, _ := filterCandidateIDs(group2model2channels[group][model], model, filters)
-
-	// If no channels found, try to find channels with the normalized model name.
-	if len(channels) == 0 {
-		normalizedModel := ratio_setting.FormatMatchingModelName(model)
-		channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
+	if retry < 0 {
+		retry = 0
 	}
-
-	if len(channels) == 0 {
+	// Keep the actual matched key attached to candidates; normalized fallback
+	// must not look priorities up under the original requested key.
+	candidates := cachedRouteCandidates(group, model, model, filters)
+	if len(candidates) == 0 {
+		normalizedModel := ratio_setting.FormatMatchingModelName(model)
+		if normalizedModel != model {
+			candidates = cachedRouteCandidates(group, normalizedModel, model, filters)
+		}
+	}
+	if len(candidates) == 0 {
 		return nil, nil
 	}
-
-	if len(channels) == 1 {
-		if channel, ok := channelsIDM[channels[0]]; ok {
-			return channel, nil
-		}
-		return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channels[0])
+	if len(candidates) == 1 {
+		return channelsIDM[candidates[0].channelID], nil
 	}
-
-	uniquePriorities := make(map[int]bool)
-	for _, channelId := range channels {
-		if channel, ok := channelsIDM[channelId]; ok {
-			uniquePriorities[int(channel.GetPriority())] = true
-		} else {
-			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
-		}
+	uniquePriorities := make(map[int64]bool)
+	for _, candidate := range candidates {
+		uniquePriorities[candidate.priority] = true
 	}
-	var sortedUniquePriorities []int
+	priorities := make([]int64, 0, len(uniquePriorities))
 	for priority := range uniquePriorities {
-		sortedUniquePriorities = append(sortedUniquePriorities, priority)
+		priorities = append(priorities, priority)
 	}
-	sort.Sort(sort.Reverse(sort.IntSlice(sortedUniquePriorities)))
-
-	if retry >= len(uniquePriorities) {
-		retry = len(uniquePriorities) - 1
+	sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
+	if retry >= len(priorities) {
+		retry = len(priorities) - 1
 	}
-	targetPriority := int64(sortedUniquePriorities[retry])
-
-	// get the priority for the given retry number
-	var sumWeight = 0
+	targetPriority := priorities[retry]
+	var sumWeight int
 	var targetChannels []*Channel
-	for _, channelId := range channels {
-		if channel, ok := channelsIDM[channelId]; ok {
-			if channel.GetPriority() == targetPriority {
-				sumWeight += channel.GetWeight()
-				targetChannels = append(targetChannels, channel)
-			}
-		} else {
-			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
+	for _, candidate := range candidates {
+		if candidate.priority == targetPriority {
+			channel := channelsIDM[candidate.channelID]
+			sumWeight += channel.GetWeight()
+			targetChannels = append(targetChannels, channel)
 		}
-	}
-
-	if len(targetChannels) == 0 {
-		return nil, errors.New(fmt.Sprintf("no channel found, group: %s, model: %s, priority: %d", group, model, targetPriority))
 	}
 
 	// smoothing factor and adjustment
@@ -221,6 +276,10 @@ func CacheGetChannel(id int) (*Channel, error) {
 		return GetChannelById(id, true)
 	}
 	channelSyncLock.RLock()
+	if channelCacheRefreshError != nil {
+		channelSyncLock.RUnlock()
+		return GetChannelById(id, true)
+	}
 	defer channelSyncLock.RUnlock()
 
 	c, ok := channelsIDM[id]
@@ -231,44 +290,68 @@ func CacheGetChannel(id int) (*Channel, error) {
 }
 
 func CacheGetChannelInfo(id int) (*ChannelInfo, error) {
-	if !common.MemoryCacheEnabled {
+	info, _, err := channelPollingInfo(id)
+	return info, err
+}
+
+// The persistence decision belongs to the same read as the cursor: degraded
+// cache routing must not depend on a missing or stale old ChannelInfo entry.
+func channelPollingInfo(id int) (*ChannelInfo, bool, error) {
+	channelSyncLock.RLock()
+	useDB := !common.MemoryCacheEnabled || channelCacheRefreshError != nil
+	if useDB {
+		channelSyncLock.RUnlock()
 		channel, err := GetChannelById(id, true)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
-		return &channel.ChannelInfo, nil
+		return &channel.ChannelInfo, true, nil
 	}
-	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
 	c, ok := channelsIDM[id]
 	if !ok {
-		return nil, fmt.Errorf("渠道# %d，已不存在", id)
+		return nil, false, fmt.Errorf("渠道# %d，已不存在", id)
 	}
-	return &c.ChannelInfo, nil
+	return &c.ChannelInfo, false, nil
 }
 
+// Enable must be called after the persistent channel/ability update commits.
+// Re-reading is essential: a disabled snapshot may contain no candidates to restore.
 func CacheUpdateChannelStatus(id int, status int) {
 	if !common.MemoryCacheEnabled {
 		return
 	}
+	if status == common.ChannelStatusEnabled {
+		InitChannelCache()
+		return
+	}
+	channelCacheRefreshLock.Lock()
+	defer channelCacheRefreshLock.Unlock()
 	channelSyncLock.Lock()
 	defer channelSyncLock.Unlock()
-	if channel, ok := channelsIDM[id]; ok {
-		channel.Status = status
+	if channel := channelsIDM[id]; channel != nil {
+		updated := *channel
+		updated.Status = status
+		channelsIDM[id] = &updated
 	}
-	if status != common.ChannelStatusEnabled {
-		// delete the channel from group2model2channels
-		for group, model2channels := range group2model2channels {
-			for model, channels := range model2channels {
-				for i, channelId := range channels {
-					if channelId == id {
-						// remove the channel from the slice
-						group2model2channels[group][model] = append(channels[:i], channels[i+1:]...)
-						break
-					}
+	removeCachedChannelRoutes(id)
+}
+
+// Caller holds channelSyncLock. Keep the membership and selection indexes in sync.
+func removeCachedChannelRoutes(id int) {
+	for group, models := range group2model2routeCandidates {
+		for model, candidates := range models {
+			kept := make([]cachedRouteCandidate, 0, len(candidates))
+			ids := make([]int, 0, len(candidates))
+			for _, candidate := range candidates {
+				if candidate.channelID != id {
+					kept = append(kept, candidate)
+					ids = append(ids, candidate.channelID)
 				}
 			}
+			group2model2routeCandidates[group][model] = kept
+			group2model2channels[group][model] = ids
 		}
 	}
 }
@@ -277,19 +360,30 @@ func CacheUpdateChannel(channel *Channel) {
 	if !common.MemoryCacheEnabled {
 		return
 	}
-	channelSyncLock.Lock()
 	if channel == nil {
-		channelSyncLock.Unlock()
 		return
 	}
+	channelCacheRefreshLock.Lock()
+	channelSyncLock.Lock()
+	oldChannel := channelsIDM[channel.Id]
+	if channel.Status == common.ChannelStatusEnabled && oldChannel != nil && oldChannel.Status != common.ChannelStatusEnabled {
+		channelSyncLock.Unlock()
+		channelCacheRefreshLock.Unlock()
+		InitChannelCache()
+		return
+	}
+	defer channelCacheRefreshLock.Unlock()
 
 	if channelsIDM == nil {
 		channelsIDM = make(map[int]*Channel)
 	}
-	if oldChannel, ok := channelsIDM[channel.Id]; ok {
+	if oldChannel := channelsIDM[channel.Id]; oldChannel != nil {
 		logger.LogDebug(nil, "CacheUpdateChannel before: id=%d, name=%s, status=%d, polling_index=%d", channel.Id, channel.Name, channel.Status, oldChannel.ChannelInfo.MultiKeyPollingIndex)
 	}
 	channelsIDM[channel.Id] = channel
+	if channel.Status != common.ChannelStatusEnabled {
+		removeCachedChannelRoutes(channel.Id)
+	}
 	if channel2advancedCustomConfig == nil {
 		channel2advancedCustomConfig = make(map[int]*kitdto.AdvancedCustomConfig)
 	}

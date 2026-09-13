@@ -58,9 +58,11 @@ type TaskAdaptor interface {
 	// AdjustBillingOnComplete returns the actual quota when a task reaches a
 	// terminal state (success/failure) during polling.
 	// Called by the polling loop after ParseTaskResult.
-	// Return a positive value to trigger delta settlement (supplement / refund).
-	// Return 0 to keep the pre-charged amount unchanged.
-	AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) int
+	// present=false means absent, present=true includes a valid zero. Identity
+	// task amounts are host base quota before frozen S*D; legacy amounts retain
+	// their existing final-quota denomination. Supplier credits are usage facts,
+	// not quota. Custom monetary adapters require separate activation coverage.
+	AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) (quota int, present bool)
 
 	// ── Request / Response ───────────────────────────────────────────
 

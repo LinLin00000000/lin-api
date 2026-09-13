@@ -32,7 +32,7 @@ import {
 import { useMediaQuery } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 
-import { getUsers, searchUsers } from '../api'
+import { getUsers, searchUsers, getUserIdentityOptions } from '../api'
 import {
   USER_STATUS,
   getUserStatusOptions,
@@ -61,6 +61,10 @@ function isDisabledUserRow(user: User) {
 
 export function UsersTable() {
   const { t } = useTranslation()
+  const { data: identityOptions } = useQuery({
+    queryKey: ['user-identity-options'],
+    queryFn: getUserIdentityOptions,
+  })
   const columns = useUsersColumns()
   const { refreshTrigger } = useUsers()
   const isMobile = useMediaQuery('(max-width: 640px)')
@@ -217,6 +221,26 @@ export function UsersTable() {
       toolbarProps={{
         searchPlaceholder: t('Filter by username, name or email...'),
         searchDebounceMs: 500,
+        additionalSearch: (
+          <select
+            aria-label={t('Identity')}
+            className='border-input bg-background h-9 rounded-md border px-3 text-sm'
+            disabled={!identityOptions}
+            value={groupFilter}
+            onChange={(event) =>
+              table
+                .getColumn('group')
+                ?.setFilterValue(event.target.value || undefined)
+            }
+          >
+            <option value=''>{t('All identities')}</option>
+            {identityOptions?.identities.map((identity) => (
+              <option key={identity} value={identity}>
+                {identity}
+              </option>
+            ))}
+          </select>
+        ),
         filters: [
           {
             columnId: 'status',
@@ -232,13 +256,12 @@ export function UsersTable() {
           },
         ],
       }}
-      getRowClassName={(row, { isMobile }) =>
-        isDisabledUserRow(row.original)
-          ? isMobile
-            ? DISABLED_ROW_MOBILE
-            : DISABLED_ROW_DESKTOP
-          : undefined
-      }
+      getRowClassName={(row, { isMobile }) => {
+        if (!isDisabledUserRow(row.original)) {
+          return undefined
+        }
+        return isMobile ? DISABLED_ROW_MOBILE : DISABLED_ROW_DESKTOP
+      }}
       bulkActions={<DataTableBulkActions table={table} />}
     />
   )

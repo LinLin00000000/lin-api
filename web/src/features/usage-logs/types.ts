@@ -114,6 +114,8 @@ export interface ToolSurchargeItem {
 }
 
 export interface LogOtherData {
+  // Untrusted historical FrozenQuote JSON; validate at the display boundary.
+  identity_billing_quote?: unknown
   admin_info?: {
     is_multi_key?: boolean
     multi_key_index?: number

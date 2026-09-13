@@ -107,8 +107,8 @@ func (a *taskPollingFetchAdaptor) ParseTaskResult(*model.Task, *http.Response, [
 	return &relaycommon.TaskInfo{Status: model.TaskStatusInProgress}, nil
 }
 
-func (a *taskPollingFetchAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
-	return 0
+func (a *taskPollingFetchAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) (int, bool) {
+	return 0, false
 }
 
 func (a *taskPollingFetchAdaptor) fetchCount() int {
@@ -760,8 +760,8 @@ func (a *scriptedPollingAdaptor) ParseTaskResult(*model.Task, *http.Response, []
 	}
 	return &relaycommon.TaskInfo{Status: model.TaskStatusInProgress}, nil
 }
-func (a *scriptedPollingAdaptor) AdjustBillingOnComplete(*model.Task, *relaycommon.TaskInfo) int {
-	return 0
+func (a *scriptedPollingAdaptor) AdjustBillingOnComplete(*model.Task, *relaycommon.TaskInfo) (int, bool) {
+	return 0, false
 }
 
 type scriptedBatchPollingAdaptor struct {

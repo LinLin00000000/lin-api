@@ -36,6 +36,7 @@ type QuotaInfo struct {
 	ModelPrice    float64
 	ModelRatio    float64
 	GroupRatio    float64
+	Frozen        *types.IdentityBilling
 }
 
 func hasCustomModelRatio(modelName string, currentRatio float64) bool {
@@ -46,19 +47,35 @@ func hasCustomModelRatio(modelName string, currentRatio float64) bool {
 	return currentRatio != defaultRatio
 }
 
+func audioBillingRatios(modelName string, frozen *types.IdentityBilling) (float64, float64, float64) {
+	if frozen != nil {
+		return frozen.Base.CompletionRatio, frozen.Base.AudioRatio, frozen.Base.AudioCompletionRatio
+	}
+	return ratio_setting.GetCompletionRatio(modelName), ratio_setting.GetAudioRatio(modelName), ratio_setting.GetAudioCompletionRatio(modelName)
+}
+
 func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	if info.UsePrice {
-		modelPrice := decimal.NewFromFloat(info.ModelPrice)
-		quotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
+		price := info.ModelPrice
+		if info.Frozen != nil {
+			price = info.Frozen.Base.ModelPrice
+		}
+		modelPrice := decimal.NewFromFloat(price)
+		unit := common.QuotaPerUnit
+		if info.Frozen != nil {
+			unit = info.Frozen.Quote.QuotaPerUnit
+		}
+		quotaPerUnit := decimal.NewFromFloat(unit)
 		groupRatio := decimal.NewFromFloat(info.GroupRatio)
 
 		quota := modelPrice.Mul(quotaPerUnit).Mul(groupRatio)
 		return common.QuotaFromDecimalChecked(quota)
 	}
 
-	completionRatio := decimal.NewFromFloat(ratio_setting.GetCompletionRatio(info.ModelName))
-	audioRatio := decimal.NewFromFloat(ratio_setting.GetAudioRatio(info.ModelName))
-	audioCompletionRatio := decimal.NewFromFloat(ratio_setting.GetAudioCompletionRatio(info.ModelName))
+	cr, ar, acr := audioBillingRatios(info.ModelName, info.Frozen)
+	completionRatio := decimal.NewFromFloat(cr)
+	audioRatio := decimal.NewFromFloat(ar)
+	audioCompletionRatio := decimal.NewFromFloat(acr)
 
 	groupRatio := decimal.NewFromFloat(info.GroupRatio)
 	modelRatio := decimal.NewFromFloat(info.ModelRatio)
@@ -77,8 +94,9 @@ func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 
 	quota = quota.Mul(ratio)
 
-	// If ratio is not zero and quota is less than or equal to zero, set quota to 1
-	if !ratio.IsZero() && quota.LessThanOrEqual(decimal.Zero) {
+	// Frozen exact-zero charges are free; retain legacy and negative-usage behavior.
+	identityExactZero := info.Frozen != nil && quota.IsZero()
+	if !identityExactZero && !ratio.IsZero() && quota.LessThanOrEqual(decimal.Zero) {
 		quota = decimal.NewFromInt(1)
 	}
 
@@ -86,6 +104,9 @@ func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 }
 
 func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage) error {
+	if relayInfo.IdentityBilling != nil {
+		return reserveIdentityRealtime(ctx, relayInfo, usage)
+	}
 	if relayInfo.UsePrice {
 		return nil
 	}
@@ -175,9 +196,13 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	audioOutTokens := usage.OutputTokenDetails.AudioTokens
 
 	tokenName := ctx.GetString("token_name")
-	completionRatio := decimal.NewFromFloat(ratio_setting.GetCompletionRatio(modelName))
-	audioRatio := decimal.NewFromFloat(ratio_setting.GetAudioRatio(relayInfo.OriginModelName))
-	audioCompletionRatio := decimal.NewFromFloat(ratio_setting.GetAudioCompletionRatio(modelName))
+	cr, ar, acr := audioBillingRatios(modelName, relayInfo.IdentityBilling)
+	if relayInfo.IdentityBilling == nil {
+		ar = ratio_setting.GetAudioRatio(relayInfo.OriginModelName)
+	}
+	completionRatio := decimal.NewFromFloat(cr)
+	audioRatio := decimal.NewFromFloat(ar)
+	audioCompletionRatio := decimal.NewFromFloat(acr)
 
 	modelRatio := relayInfo.PriceData.ModelRatio
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
@@ -194,6 +219,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 			AudioTokens: audioOutTokens,
 		},
 		ModelName:  modelName,
+		Frozen:     relayInfo.IdentityBilling,
 		UsePrice:   usePrice,
 		ModelRatio: modelRatio,
 		GroupRatio: groupRatio,
@@ -239,6 +265,9 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	if tieredResult != nil {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
+	}
+	if relayInfo.IdentityBilling != nil {
+		other.SetPublic("identity_billing_quote", relayInfo.IdentityBilling.Quote)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
@@ -304,9 +333,10 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 
 	tokenName := ctx.GetString("token_name")
 	billingModelName := relayInfo.GetBillingModelName()
-	completionRatio := decimal.NewFromFloat(ratio_setting.GetCompletionRatio(billingModelName))
-	audioRatio := decimal.NewFromFloat(ratio_setting.GetAudioRatio(billingModelName))
-	audioCompletionRatio := decimal.NewFromFloat(ratio_setting.GetAudioCompletionRatio(billingModelName))
+	cr, ar, acr := audioBillingRatios(billingModelName, relayInfo.IdentityBilling)
+	completionRatio := decimal.NewFromFloat(cr)
+	audioRatio := decimal.NewFromFloat(ar)
+	audioCompletionRatio := decimal.NewFromFloat(acr)
 
 	modelRatio := relayInfo.PriceData.ModelRatio
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
@@ -323,6 +353,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 			AudioTokens: audioOutTokens,
 		},
 		ModelName:  billingModelName,
+		Frozen:     relayInfo.IdentityBilling,
 		UsePrice:   usePrice,
 		ModelRatio: modelRatio,
 		GroupRatio: groupRatio,
@@ -368,6 +399,9 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	if tieredResult != nil {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
+	}
+	if relayInfo.IdentityBilling != nil {
+		other.SetPublic("identity_billing_quote", relayInfo.IdentityBilling.Quote)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{

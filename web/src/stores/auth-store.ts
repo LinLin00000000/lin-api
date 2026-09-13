@@ -84,6 +84,8 @@ interface AuthState {
     session: LoginSession | null
     pending2FAFlowToken: string | null
     bootstrapState: AuthBootstrapState
+    /** Monotonic in-memory boundary for identity-scoped consumers. */
+    generation: number
     setBundle: (bundle: AuthBundle) => void
     setUser: (user: AuthUser | null) => void
     setPending2FAFlowToken: (flowToken: string | null) => void
@@ -100,6 +102,7 @@ export const useAuthStore = create<AuthState>()((set) => ({
     session: null,
     pending2FAFlowToken: null,
     bootstrapState: 'idle',
+    generation: 0,
     setBundle: (bundle) =>
       set((state) => ({
         ...state,
@@ -111,12 +114,13 @@ export const useAuthStore = create<AuthState>()((set) => ({
           session: bundle.session,
           pending2FAFlowToken: null,
           bootstrapState: 'complete',
+          generation: state.auth.generation + 1,
         },
       })),
     setUser: (user) =>
       set((state) => ({
         ...state,
-        auth: { ...state.auth, user },
+        auth: { ...state.auth, user, generation: state.auth.generation + 1 },
       })),
     setPending2FAFlowToken: (pending2FAFlowToken) =>
       set((state) => ({
@@ -139,6 +143,7 @@ export const useAuthStore = create<AuthState>()((set) => ({
           session: null,
           pending2FAFlowToken: null,
           bootstrapState,
+          generation: state.auth.generation + 1,
         },
       })),
   },

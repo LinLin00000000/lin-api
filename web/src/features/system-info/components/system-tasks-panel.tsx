@@ -42,6 +42,56 @@ import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestampRelative, formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import {
+  getModelUpdateFeedback,
+  type ModelUpdateFeedback,
+} from '../lib/model-update-feedback'
+
+function ModelUpdateDetail(props: { feedback: ModelUpdateFeedback }) {
+  const { t } = useTranslation()
+  const feedback = props.feedback
+  return (
+    <div className='space-y-1'>
+      {feedback.scanIncomplete && <p>{t('Scan incomplete.')}</p>}
+      {feedback.status === 'failed' && (
+        <p>{t('Model update did not fully complete.')}</p>
+      )}
+      {feedback.status === 'unknown' && (
+        <p>{t('Completion details unavailable.')}</p>
+      )}
+      {feedback.status === 'succeeded' && <p>{t('Model update completed.')}</p>}
+      {feedback.checked !== null && (
+        <p>{t('Checked channels: {{count}}', { count: feedback.checked })}</p>
+      )}
+      {feedback.failed !== null && (
+        <p>{t('Failed channels: {{count}}', { count: feedback.failed })}</p>
+      )}
+      {feedback.committed > 0 && (
+        <p>
+          {t('Committed changes: {{count}}', { count: feedback.committed })}
+        </p>
+      )}
+      {feedback.degraded > 0 && (
+        <>
+          <p>
+            {t('Cache refresh failed for committed changes: {{count}}', {
+              count: feedback.degraded,
+            })}
+          </p>
+          <p>
+            {t(
+              'Do not reapply committed writes. Only retry the cache refresh for these changes.'
+            )}
+          </p>
+        </>
+      )}
+      {feedback.status === 'partial' && (
+        <p>{t('Model update did not fully complete.')}</p>
+      )}
+    </div>
+  )
+}
+
 const TASK_LIMIT = 20
 const ACTIVE_POLL_INTERVAL_MS = 8000
 
@@ -135,6 +185,31 @@ function SystemTasksTable(props: SystemTasksTableProps) {
         <TableBody>
           {props.tasks.map((task) => {
             const progress = getProgress(task)
+            const feedback = getModelUpdateFeedback(task)
+            let displayStatus = task.status
+            let statusLabel: string = t(task.status)
+            if (feedback) {
+              if (
+                feedback.status === 'failed' ||
+                feedback.status === 'partial'
+              ) {
+                displayStatus = 'failed'
+              }
+              if (
+                feedback.status === 'degraded' ||
+                feedback.status === 'unknown'
+              ) {
+                displayStatus = 'pending'
+              }
+              const labels = {
+                succeeded: t('succeeded'),
+                failed: t('failed'),
+                partial: t('Partially completed'),
+                degraded: t('Committed; cache degraded'),
+                unknown: t('Completion unverified'),
+              }
+              statusLabel = labels[feedback.status]
+            }
             return (
               <TableRow key={task.task_id} className='hover:bg-muted/30'>
                 <TableCell className='px-4 py-3 align-middle'>
@@ -149,17 +224,17 @@ function SystemTasksTable(props: SystemTasksTableProps) {
                 </TableCell>
                 <TableCell className='py-3 align-middle'>
                   <Badge
-                    variant={STATUS_VARIANT[task.status]}
-                    className={cn('gap-1.5', STATUS_CLASS_NAME[task.status])}
+                    variant={STATUS_VARIANT[displayStatus]}
+                    className={cn('gap-1.5', STATUS_CLASS_NAME[displayStatus])}
                   >
                     <span
                       className={cn(
                         'size-1.5 rounded-full',
-                        STATUS_DOT_CLASS_NAME[task.status]
+                        STATUS_DOT_CLASS_NAME[displayStatus]
                       )}
                       aria-hidden='true'
                     />
-                    {t(task.status)}
+                    {statusLabel}
                   </Badge>
                 </TableCell>
                 <TableCell className='py-3 align-middle'>
@@ -168,7 +243,7 @@ function SystemTasksTable(props: SystemTasksTableProps) {
                       value={progress ?? 0}
                       className={cn(
                         'w-24',
-                        PROGRESS_BAR_CLASS_NAME[task.status]
+                        PROGRESS_BAR_CLASS_NAME[displayStatus]
                       )}
                     />
                     <span className='text-muted-foreground w-10 text-right text-xs tabular-nums'>
@@ -190,10 +265,20 @@ function SystemTasksTable(props: SystemTasksTableProps) {
                   )}
                 </TableCell>
                 <TableCell
-                  className='text-destructive max-w-[220px] truncate py-3 pr-4 align-middle text-xs'
-                  title={task.error || undefined}
+                  className={cn(
+                    'max-w-[320px] py-3 pr-4 align-middle text-xs',
+                    feedback
+                      ? 'whitespace-normal break-words'
+                      : 'text-destructive truncate',
+                    feedback && displayStatus === 'failed' && 'text-destructive'
+                  )}
+                  title={!feedback ? task.error || undefined : undefined}
                 >
-                  {task.error || '-'}
+                  {feedback ? (
+                    <ModelUpdateDetail feedback={feedback} />
+                  ) : (
+                    task.error || '-'
+                  )}
                 </TableCell>
               </TableRow>
             )
@@ -285,13 +370,14 @@ export function SystemTasksPanel() {
       </div>
 
       <div aria-busy={tasksQuery.isFetching}>
-        {loading ? (
+        {loading && (
           <div className='space-y-2 p-4 sm:p-5'>
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className='h-9 w-full rounded-md' />
+            {['one', 'two', 'three', 'four'].map((key) => (
+              <Skeleton key={key} className='h-9 w-full rounded-md' />
             ))}
           </div>
-        ) : tasksQuery.isError ? (
+        )}
+        {!loading && tasksQuery.isError && (
           <ErrorState
             title={t('We could not load system tasks.')}
             description={
@@ -304,7 +390,8 @@ export function SystemTasksPanel() {
             }}
             className='min-h-[260px]'
           />
-        ) : tasks.length === 0 ? (
+        )}
+        {!loading && !tasksQuery.isError && tasks.length === 0 && (
           <div className='px-4 py-10 text-center sm:px-5'>
             <div className='bg-muted mx-auto mb-3 flex size-10 items-center justify-center rounded-lg'>
               <ListChecks
@@ -316,7 +403,8 @@ export function SystemTasksPanel() {
               {t('No system tasks yet.')}
             </p>
           </div>
-        ) : (
+        )}
+        {!loading && !tasksQuery.isError && tasks.length > 0 && (
           <div className='space-y-4 p-4 sm:p-5'>
             <div>
               <div className='mb-2 flex items-center justify-between gap-3'>

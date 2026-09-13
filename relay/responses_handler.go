@@ -149,6 +149,10 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 	usageDto := usage.(*dto.Usage)
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
+		if info.IdentityBilling != nil {
+			service.PostTextConsumeQuota(c, info, usageDto, nil)
+			return nil
+		}
 		originModelName := info.OriginModelName
 		originPriceData := info.PriceData
 

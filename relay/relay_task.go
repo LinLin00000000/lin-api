@@ -2,12 +2,14 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -92,6 +94,9 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 	}
 	if ch.Status != common.ChannelStatusEnabled {
 		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is disabled"), "task_channel_disable", http.StatusBadRequest)
+	}
+	if err := service.AuthorizeSelectedRequestChannel(c, info.OriginModelName, ch.Id); err != nil {
+		return service.TaskErrorWrapperLocal(err, "identity_service_denied", http.StatusForbidden)
 	}
 	info.LockedChannel = ch
 
@@ -180,6 +185,9 @@ func ApplyChannelPin(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError
 	if ch.Status != common.ChannelStatusEnabled {
 		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is disabled"), "origin_task_channel_disabled", http.StatusBadRequest)
 	}
+	if err := service.AuthorizeSelectedRequestChannel(c, info.OriginModelName, ch.Id); err != nil {
+		return service.TaskErrorWrapperLocal(err, "identity_service_denied", http.StatusForbidden)
+	}
 	info.LockedChannel = ch
 	return nil
 }
@@ -235,6 +243,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if modelName == "" {
 		modelName = service.CoverTaskActionToModelName(platform, info.Action)
 	}
+	if err := service.AuthorizeSelectedRequestChannel(c, modelName, info.ChannelId); err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, "identity_service_denied", http.StatusForbidden)
+	}
 
 	if !mappedBeforeValidate {
 		info.OriginModelName = modelName
@@ -262,7 +273,12 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			}
 		}
 	}
-	if useTiered {
+	if info.IdentityBilling != nil {
+		priceData, err = helper.RefreshAsyncIdentityPrice(c, info)
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "model_price_error", http.StatusBadRequest)
+		}
+	} else if useTiered {
 		provider, supported := adaptor.(channel.TaskUsageFactsProvider)
 		if !exists || !supported {
 			return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s has no usage expression or meter", modelName), "model_price_error", http.StatusBadRequest)
@@ -284,10 +300,19 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			return nil, service.TaskErrorWrapper(runErr, "model_price_error", http.StatusBadRequest)
 		}
 		groupRatioInfo := helper.HandleGroupRatio(c, info)
+		if service.RequestIdentity(c) != nil {
+			groupRatioInfo = types.GroupRatioInfo{GroupRatio: 1, GroupSpecialRatio: -1}
+		}
 		quota, clamp := common.QuotaRoundChecked(cost * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		noteTaskQuotaClamp(info, clamp)
 		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, GroupRatioInfo: groupRatioInfo}
 		info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{BillingMode: billing_setting.BillingModeTieredExpr, ModelName: modelName, ExprString: exprStr, ExprHash: billingexpr.ExprHashString(exprStr), GroupRatio: groupRatioInfo.GroupRatio, EstimatedQuotaBeforeGroup: cost * common.QuotaPerUnit, EstimatedQuotaAfterGroup: quota, EstimatedTier: trace.MatchedTier, QuotaPerUnit: common.QuotaPerUnit, ExprVersion: billingexpr.ExprVersion(exprStr), TaskUsageBilling: true, UsageFacts: facts}
+		if service.RequestIdentity(c) != nil {
+			priceData, err = helper.FreezeAsyncIdentityPrice(c, info, priceData, cost*common.QuotaPerUnit)
+			if err != nil {
+				return nil, service.TaskErrorWrapperLocal(err, "model_price_error", http.StatusBadRequest)
+			}
+		}
 	} else {
 		priceData, err = helper.ModelPriceHelperPerCall(c, info)
 		if err != nil {
@@ -325,9 +350,14 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
-	if info.Billing == nil && !info.PriceData.FreeModel {
+	if info.IdentityBilling != nil && info.Billing != nil {
+		if reserveErr := info.Billing.Reserve(info.PriceData.Quota); reserveErr != nil {
+			return nil, service.TaskErrorWrapperLocal(reserveErr, "insufficient_quota", http.StatusForbidden)
+		}
+	}
+	if info.Billing == nil && (info.IdentityBilling != nil || !info.PriceData.FreeModel) {
 		info.ForcePreConsume = true
-		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
+		if apiErr := service.PreConsumeDurableBilling(c, info.PriceData.Quota, info); apiErr != nil {
 			return nil, service.TaskErrorFromAPIError(apiErr)
 		}
 	}
@@ -355,7 +385,21 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// 10. Parse only. The controller presents the response after the durable
 	// task barrier and billing settlement.
 	parsed, taskErr := adaptor.ParseResponse(c, resp, info)
+	// ParseResponse may return a TaskSubmitResponse together with an error when
+	// the upstream accepted the task but local settlement/usage processing
+	// failed. Preserve that accepted result for the controller's durable error
+	// path; ordinary parse failures still return no result and remain retryable.
 	if taskErr != nil {
+		if parsed != nil && parsed.Immediate != nil && strings.TrimSpace(parsed.Immediate.TaskID) != "" {
+			return &TaskSubmitResult{
+				UpstreamTaskID: parsed.UpstreamTaskID,
+				TaskData:       parsed.TaskData,
+				Platform:       platform,
+				Quota:          info.PriceData.Quota,
+				Immediate:      parsed.Immediate,
+				PluginState:    parsed.PluginState,
+			}, taskErr
+		}
 		return nil, taskErr
 	}
 	if parsed == nil {
@@ -391,6 +435,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 func recalcQuotaFromRatios(info *relaycommon.RelayInfo, ratios map[string]float64) (int, bool) {
 	// 从 PriceData 获取不含 OtherRatios 的基础价格
 	baseQuota := info.PriceData.RemoveOtherRatiosFromFloat(float64(info.PriceData.Quota))
+	if b := info.IdentityBilling; b != nil {
+		baseQuota = b.EstimatedQuotaBeforeGroup * b.Quote.Components["multiplier"].Effective
+	}
 	priceData := info.PriceData
 	if !priceData.ReplaceOtherRatios(ratios) {
 		return 0, false
@@ -501,6 +548,9 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 // 仅当渠道类型为 Gemini 或 Vertex 时触发；其他渠道或出错时返回 nil。
 // 当非 OpenAI Video API 时，还会构建自定义格式的响应体。
 func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.IdentityQuote != nil && (task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure) {
+		return nil
+	}
 	channelModel, err := model.GetChannelById(task.ChannelId, true)
 	if err != nil {
 		return nil
@@ -534,6 +584,7 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		return nil
 	}
 
+	original := *task
 	snap := task.Snapshot()
 
 	// 将上游最新状态更新到 task
@@ -552,7 +603,37 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
 	}
 
-	if !snap.Equal(task.Snapshot()) {
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.IdentityQuote != nil {
+		terminal := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+		wasTerminal := snap.Status == model.TaskStatusSuccess || snap.Status == model.TaskStatusFailure
+		if wasTerminal {
+			return nil
+		}
+		if terminal {
+			task.Progress = taskcommon.ProgressComplete
+			task.FinishTime = time.Now().Unix()
+			if task.Status == model.TaskStatusFailure {
+				task.FailReason = ti.Reason
+			}
+		}
+		if !snap.Equal(task.Snapshot()) {
+			won, err := task.UpdateWithStatus(snap.Status)
+			if err != nil || !won {
+				// A live fetch may lose to polling. Never return its rejected terminal state.
+				persisted, exists, readErr := model.GetByTaskId(task.UserId, task.TaskID)
+				if readErr == nil && exists {
+					*task = *persisted
+				} else {
+					*task = original
+				}
+				return nil
+			}
+			if terminal {
+				service.SettleTaskBillingAfterTerminalCAS(context.Background(), adaptor, task, ti)
+			}
+		}
+	} else if !snap.Equal(task.Snapshot()) {
+		// Explicit legacy read behavior; absent quote never enters the new calculator.
 		_, _ = task.UpdateWithStatus(snap.Status)
 	}
 

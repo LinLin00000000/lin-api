@@ -65,6 +65,9 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, task *model
 			other.SetPublic("usage_facts", snap.UsageFacts)
 		}
 	}
+	if info.IdentityBilling != nil {
+		other.SetPublic("identity_billing_quote", info.IdentityBilling.Quote)
+	}
 	appendTaskLogInfo(task, other)
 	attachQuotaSaturation(c, info, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
@@ -137,6 +140,9 @@ func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
 func taskBillingOther(task *model.Task) *model.LogOther {
 	other := model.NewLogOther()
 	if bc := task.PrivateData.BillingContext; bc != nil {
+		if bc.IdentityQuote != nil {
+			other.SetPublic("identity_billing_quote", bc.IdentityQuote)
+		}
 		other.SetPublic("model_price", bc.ModelPrice)
 		if bc.ModelRatio > 0 {
 			other.SetPublic("model_ratio", bc.ModelRatio)
@@ -259,6 +265,9 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...*common.QuotaClamp) {
+	if task.PrivateData.SettlementIncomplete {
+		return
+	}
 	if actualQuota < 0 {
 		return
 	}
@@ -335,6 +344,17 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 		return false
 	}
 
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.IdentityQuote != nil {
+		q := bc.IdentityQuote
+		multiplier := 1.0
+		if prices := taskBillingContextPriceData(bc); prices != nil {
+			multiplier = prices.OtherRatioMultiplier()
+		}
+		quota, clamp := common.QuotaFromFloatChecked(float64(totalTokens) * q.Components["input"].Effective * multiplier)
+		RecalculateTaskQuota(ctx, task, quota, "frozen identity task tokens", clamp)
+		return true
+	}
+	// Explicit legacy branch for tasks without an identity quote.
 	modelName := taskModelName(task)
 
 	// 获取模型价格和倍率

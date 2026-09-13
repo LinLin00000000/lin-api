@@ -166,6 +166,9 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 		return false, 0, nil
 	}
 
+	if relayInfo.IdentityBilling != nil && snap.GroupRatio == 0 {
+		return true, 0, nil
+	}
 	requestInput := billingexpr.RequestInput{}
 	if relayInfo.BillingRequestInput != nil {
 		requestInput = *relayInfo.BillingRequestInput

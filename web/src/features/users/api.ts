@@ -155,12 +155,26 @@ export async function resetUserTwoFA(id: number): Promise<ApiResponse> {
   return res.data
 }
 
-/**
- * Get all available groups
- */
+/** Legacy group API retained for existing channel consumers. */
 export async function getGroups(): Promise<ApiResponse<string[]>> {
   const res = await api.get('/api/group/')
   return res.data
+}
+
+/** User identities (or legacy groups), not channel service groups. */
+export type UserIdentityOptions = {
+  mode: 'identity_service' | 'legacy'
+  identities: string[]
+}
+
+export async function getUserIdentityOptions(): Promise<UserIdentityOptions> {
+  const res = await api.get<ApiResponse<UserIdentityOptions>>(
+    '/api/user/identity-options'
+  )
+  if (!res.data.success || !res.data.data) {
+    throw new Error(res.data.message || 'Failed to load user identities')
+  }
+  return res.data.data
 }
 
 /**

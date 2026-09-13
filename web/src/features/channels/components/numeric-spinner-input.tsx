@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { Minus, Plus } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
@@ -32,6 +33,7 @@ interface NumericSpinnerInputProps {
   disabled?: boolean
   className?: string
   label?: string
+  ariaLabel?: string
 }
 
 export function NumericSpinnerInput({
@@ -44,7 +46,9 @@ export function NumericSpinnerInput({
   disabled = false,
   className,
   label,
+  ariaLabel,
 }: NumericSpinnerInputProps) {
+  const { t } = useTranslation()
   const [localValue, setLocalValue] = useState(String(value ?? 0))
   const [editing, setEditing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -151,7 +155,11 @@ export function NumericSpinnerInput({
         <button
           type='button'
           tabIndex={-1}
-          aria-label='Decrement'
+          aria-label={
+            ariaLabel
+              ? t('Decrease {{label}}', { label: ariaLabel })
+              : t('Decrement')
+          }
           onClick={handleDecrement}
           disabled={disabled || atMin}
           className={cn(
@@ -169,6 +177,7 @@ export function NumericSpinnerInput({
           <input
             ref={inputRef}
             type='text'
+            aria-label={ariaLabel}
             value={localValue}
             onChange={handleInputChange}
             onBlur={commitValue}
@@ -179,6 +188,7 @@ export function NumericSpinnerInput({
         ) : (
           <button
             type='button'
+            aria-label={ariaLabel}
             onClick={handleStartEdit}
             disabled={disabled}
             title={localValue}
@@ -194,7 +204,11 @@ export function NumericSpinnerInput({
         <button
           type='button'
           tabIndex={-1}
-          aria-label='Increment'
+          aria-label={
+            ariaLabel
+              ? t('Increase {{label}}', { label: ariaLabel })
+              : t('Increment')
+          }
           onClick={handleIncrement}
           disabled={disabled || atMax}
           className={cn(

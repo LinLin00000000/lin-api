@@ -26,6 +26,8 @@ import type { PricingData } from './types'
 
 // Get model pricing data
 export async function getPricing(): Promise<PricingData> {
-  const res = await api.get('/api/pricing')
+  // React Query deduplicates by identity + auth generation. The HTTP client's
+  // SID-only key can reuse a prior identity's in-flight catalog within a session.
+  const res = await api.get('/api/pricing', { disableDuplicate: true })
   return res.data
 }

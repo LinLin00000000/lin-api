@@ -186,6 +186,9 @@ type modelListGroups struct {
 }
 
 func getModelListGroups(c *gin.Context) (modelListGroups, error) {
+	if r := service.RequestIdentity(c); r != nil {
+		return modelListGroups{userGroup: r.Identity(), tokenGroup: r.TokenGroup(), ownerGroups: r.Groups()}, nil
+	}
 	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
 	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 	if userGroup == "" && (tokenGroup == "" || tokenGroup == "auto") {
@@ -250,7 +253,10 @@ func ListModels(c *gin.Context, modelType int) {
 	}
 	models := service.GetGroupsEnabledModels(ownerGroups)
 	for _, modelName := range models {
-		if modelLimitEnable {
+		if service.RequestIdentity(c) != nil && !service.RequestModelVisible(c, ownerGroups, modelName) {
+			continue
+		}
+		if modelLimitEnable && service.RequestIdentity(c) == nil {
 			matchingName := ratio_setting.FormatMatchingModelName(modelName)
 			if !tokenModelLimit[modelName] && !tokenModelLimit[matchingName] {
 				continue
@@ -347,6 +353,20 @@ func EnabledListModels(c *gin.Context) {
 
 func RetrieveModel(c *gin.Context, modelType int) {
 	modelId := c.Param("model")
+	if service.RequestIdentity(c) != nil {
+		groups, err := getModelListGroups(c)
+		if err != nil || !service.RequestModelVisible(c, groups.ownerGroups, modelId) {
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "model_not_found", "message": "model not available"}})
+			return
+		}
+		aiModel := buildOpenAIModel(modelId, getPreferredModelOwners([]string{modelId}, groups.ownerGroups))
+		if modelType == constant.ChannelTypeAnthropic {
+			c.JSON(200, dto.AnthropicModel{ID: aiModel.Id, CreatedAt: time.Unix(int64(aiModel.Created), 0).UTC().Format(time.RFC3339), DisplayName: aiModel.Id, Type: "model"})
+		} else {
+			c.JSON(200, aiModel)
+		}
+		return
+	}
 	if aiModel, ok := openAIModelsMap[modelId]; ok {
 		switch modelType {
 		case constant.ChannelTypeAnthropic:

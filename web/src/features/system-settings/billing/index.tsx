@@ -16,8 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useParams } from '@tanstack/react-router'
+import { useTranslation } from 'react-i18next'
+
+import { SectionPageLayout } from '@/components/layout'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
+
 import { SettingsPage } from '../components/settings-page'
 import type { BillingSettings } from '../types'
+import { IdentityServiceSection } from './identity-service/identity-service-section'
 import {
   BILLING_DEFAULT_SECTION,
   getBillingSectionContent,
@@ -109,6 +117,24 @@ const defaultBillingSettings: BillingSettings = {
 }
 
 export function BillingSettings() {
+  const { section } = useParams({
+    from: '/_authenticated/system-settings/billing/$section',
+  })
+  const { t } = useTranslation()
+  const user = useAuthStore((s) => s.auth.user)
+  if (section === 'identity-service') {
+    if (user?.role !== ROLE.SUPER_ADMIN) return null
+    return (
+      <SectionPageLayout>
+        <SectionPageLayout.Title>
+          {t('Identity and service configuration')}
+        </SectionPageLayout.Title>
+        <SectionPageLayout.Content>
+          <IdentityServiceSection />
+        </SectionPageLayout.Content>
+      </SectionPageLayout>
+    )
+  }
   return (
     <SettingsPage
       routePath='/_authenticated/system-settings/billing/$section'

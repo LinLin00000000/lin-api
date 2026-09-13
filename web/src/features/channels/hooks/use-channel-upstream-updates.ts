@@ -22,6 +22,7 @@ import { toast } from 'sonner'
 
 import { api, type ApiRequestConfig } from '@/lib/api'
 
+import { handleChannelCommitResult } from '../api'
 import { normalizeModelList } from '../lib/upstream-update-utils'
 
 const upstreamUpdateRequestConfig = {
@@ -31,9 +32,9 @@ const upstreamUpdateRequestConfig = {
 
 function getManualIgnoredModelCount(settings: unknown): number {
   let parsed: Record<string, unknown> | null = null
-  if (settings && typeof settings === 'object')
+  if (settings && typeof settings === 'object') {
     parsed = settings as Record<string, unknown>
-  else if (typeof settings === 'string') {
+  } else if (typeof settings === 'string') {
     try {
       parsed = JSON.parse(settings)
     } catch {
@@ -126,7 +127,9 @@ export function useChannelUpstreamUpdates(refresh: () => Promise<void>) {
           },
           upstreamUpdateRequestConfig
         )
-        const { success, message, data } = res.data || {}
+        const { success, message, data } = handleChannelCommitResult(
+          res.data || { success: false }
+        )
         if (!success) {
           toast.error(message || t('Operation failed'))
           return
@@ -171,9 +174,13 @@ export function useChannelUpstreamUpdates(refresh: () => Promise<void>) {
         {},
         upstreamUpdateRequestConfig
       )
-      const { success, message, data } = res.data || {}
+      const { success, message, data } = handleChannelCommitResult(
+        res.data || { success: false }
+      )
       if (!success) {
         toast.error(message || t('Batch processing failed'))
+        // Partial batches may have durable writes: read back, never retry them.
+        if (res.data?.committed) await refresh()
         return
       }
 
@@ -215,7 +222,9 @@ export function useChannelUpstreamUpdates(refresh: () => Promise<void>) {
           { id: ch.id },
           upstreamUpdateRequestConfig
         )
-        const { success, message, data } = res.data || {}
+        const { success, message, data } = handleChannelCommitResult(
+          res.data || { success: false }
+        )
         if (!success) {
           toast.error(message || t('Detection failed'))
           return

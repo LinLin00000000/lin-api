@@ -58,7 +58,6 @@ import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Label } from '@/components/ui/label'
 import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
-import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
@@ -84,6 +83,7 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import { FrozenBillingQuote } from '../frozen-billing-quote'
 import { PluginAuthorLink } from '../plugin-author-link'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
@@ -506,6 +506,8 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const details = props.log.content ?? ''
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
+  const hasFrozenQuote =
+    other != null && Object.hasOwn(other, 'identity_billing_quote')
 
   const isViolation = isViolationFeeLog(other)
   const isRefund = props.log.type === 6
@@ -515,13 +517,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const isSubscription = other?.billing_source === 'subscription'
   const isTieredBilling =
     isConsume &&
+    !hasFrozenQuote &&
     !isViolation &&
     other?.billing_mode === 'tiered_expr' &&
     !!other?.expr_b64
-  const pricingData = usePricingData(props.open && isTieredBilling)
-  const billingUsageSchema = pricingData.models.find(
-    (model) => model.model_name === props.log.model_name
-  )?.billing_usage_schema
   const hasAudioTokens = other?.ws || other?.audio
   const showTiming = isTimingLogType(props.log.type)
   const showAdminIp =
@@ -1151,8 +1150,34 @@ export function DetailsDialog(props: DetailsDialogProps) {
           <TokenBreakdown log={props.log} other={other} />
         )}
 
+        {/* Historical snapshots are display-only, including malformed snapshots. */}
+        {(isConsume || isRefund) && !isViolation && (
+          <>
+            <FrozenBillingQuote
+              quote={other?.identity_billing_quote}
+              expression={other?.billing_mode === 'tiered_expr'}
+            />
+            {hasFrozenQuote && (
+              <DetailRow
+                label={t('Total Cost')}
+                value={formatLogQuota(props.log.quota)}
+                mono
+              />
+            )}
+            {hasFrozenQuote &&
+              other?.billing_mode === 'tiered_expr' &&
+              typeof other.expr_b64 === 'string' && (
+                <DetailSection label={t('Frozen billing expression')}>
+                  <pre className='text-xs break-all whitespace-pre-wrap'>
+                    {decodeBillingExprB64(other.expr_b64)}
+                  </pre>
+                </DetailSection>
+              )}
+          </>
+        )}
+
         {/* Billing breakdown (consume type) */}
-        {isConsume && other && !isViolation && (
+        {isConsume && other && !isViolation && !hasFrozenQuote && (
           <BillingBreakdown
             log={props.log}
             other={other}
@@ -1169,7 +1194,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
               matchedTierLabel={other.matched_tier}
               requestRules={other.request_rules}
               hideCacheColumns={!hasAnyCacheTokens(other)}
-              usageSchema={billingUsageSchema}
+              // Legacy logs do not freeze a usage schema. Use the renderer's
+              // schema-less/raw-expression fallback, never today's catalog.
+              usageSchema={undefined}
               usageFacts={other.usage_facts}
             />
           </DetailSection>

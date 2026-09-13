@@ -12,6 +12,10 @@ import (
 )
 
 func GetUserUsableGroups(userGroup string) map[string]string {
+	return getUserUsableGroups(userGroup, true)
+}
+
+func getUserUsableGroups(userGroup string, includeIdentity bool) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
 	if userGroup != "" {
 		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
@@ -33,7 +37,7 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 			}
 		}
 		// 如果userGroup不在UserUsableGroups中，返回UserUsableGroups + userGroup
-		if _, ok := groupsCopy[userGroup]; !ok {
+		if _, ok := groupsCopy[userGroup]; !ok && includeIdentity {
 			groupsCopy[userGroup] = "用户分组"
 		}
 	}
@@ -95,6 +99,9 @@ func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
 // The absence of the context value means that the token inherits the complete
 // global Auto list; a present (even empty) value is an explicit token snapshot.
 func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
+	if r := RequestIdentity(c); r != nil {
+		return r.AutoGroups()
+	}
 	value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoGroups)
 	if !ok {
 		return GetUserAutoGroup(userGroup)

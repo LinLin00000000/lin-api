@@ -202,7 +202,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		addUsedChannel(c, channel.Id)
-		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
+		if billingErr := service.PrepareIdentityBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break
 		}
@@ -333,6 +333,9 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
 	if info.ChannelMeta == nil {
+		if err := service.AuthorizeSelectedRequestChannel(c, info.OriginModelName, c.GetInt("channel_id")); err != nil {
+			return nil, types.NewError(err, types.ErrorCodeAccessDenied, types.ErrOptionWithSkipRetry())
+		}
 		autoBan := c.GetBool("auto_ban")
 		autoBanInt := 1
 		if !autoBan {
@@ -353,7 +356,9 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
-	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+	if info.IdentityBilling == nil {
+		info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+	}
 
 	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
 	if newAPIError != nil {
@@ -629,6 +634,10 @@ func executeTaskSubmissionWith(
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
+			if err := service.AuthorizeSelectedRequestChannel(c, relayInfo.OriginModelName, channel.Id); err != nil {
+				taskErr = service.TaskErrorWrapperLocal(err, "identity_service_denied", http.StatusForbidden)
+				break
+			}
 			if retryParam.GetRetry() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
@@ -678,6 +687,40 @@ func executeTaskSubmissionWith(
 				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode),
 				relayInfo)
 		}
+		// A response carrying an upstream task means execution was already
+		// accepted; settlement/protocol failures must never resubmit it.
+		if result != nil && result.Immediate != nil && strings.TrimSpace(result.Immediate.TaskID) != "" {
+			// Upstream has accepted/completed the work. Persist an auditable
+			// terminal task even when local usage/settlement parsing failed;
+			// this path is deliberately non-retryable and keeps the existing
+			// deferred refund semantics (no invented charge).
+			task := model.InitTask(result.Platform, relayInfo)
+			task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
+			task.PrivateData.UpstreamTaskID = result.Immediate.TaskID
+			task.PrivateData.SettlementIncomplete = true
+			task.PrivateData.BillingSource = relayInfo.BillingSource
+			task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
+			task.PrivateData.TokenId = relayInfo.TokenId
+			task.PrivateData.NodeName = common.NodeName
+			task.PrivateData.BillingContext = service.TaskBillingContextFromRelayInfo(relayInfo)
+			task.Status = model.TaskStatus(result.Immediate.Status)
+			task.Progress = result.Immediate.Progress
+			task.FailReason = "settlement incomplete: " + taskErr.Code
+			task.FinishTime = time.Now().Unix()
+			task.Quota = 0
+			if result.TaskData != nil {
+				task.SetData(result.TaskData)
+			}
+			if insertErr := task.InsertWithContext(c.Request.Context()); insertErr == nil {
+				// This record is audit-only, not the successful billing barrier.
+				// Leave durable false so the existing defer refunds the reserve.
+				taskErr.Data = map[string]any{"task_id": task.TaskID, "upstream_task_id": task.GetUpstreamTaskID(), "status": task.Status, "settlement_error": task.FailReason}
+			} else {
+				taskErr.Data = map[string]any{"upstream_task_id": result.Immediate.TaskID, "settlement_error": taskErr.Code}
+			}
+			diagnostics.attemptFailed(retryParam.GetRetry()+1, channel, taskErr, false)
+			break
+		}
 
 		willRetry := shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry())
 		diagnostics.attemptFailed(retryParam.GetRetry()+1, channel, taskErr, willRetry)
@@ -706,6 +749,16 @@ func executeTaskSubmissionWith(
 		return nil, service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
 	}
 
+	if relayInfo.IdentityBilling != nil && result.Immediate != nil {
+		quota, known, err := service.IdentityTaskTerminalQuota(service.TaskBillingContextFromRelayInfo(relayInfo), result.Immediate)
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "frozen_task_settlement_failed", http.StatusBadGateway)
+		}
+		if known {
+			result.Quota = quota
+			relayInfo.PriceData.Quota = quota
+		}
+	}
 	// Reserve any submit-time upward billing adjustment before persistence.
 	// This keeps insertion failures fully refundable while ensuring settlement
 	// after the barrier normally has a zero positive delta.
@@ -733,15 +786,7 @@ func executeTaskSubmissionWith(
 	task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
 	task.PrivateData.TokenId = relayInfo.TokenId
 	task.PrivateData.NodeName = common.NodeName
-	task.PrivateData.BillingContext = &model.TaskBillingContext{
-		ModelPrice:      relayInfo.PriceData.ModelPrice,
-		GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
-		ModelRatio:      relayInfo.PriceData.ModelRatio,
-		OtherRatios:     relayInfo.PriceData.OtherRatios(),
-		OriginModelName: relayInfo.OriginModelName,
-		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
-		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
-	}
+	task.PrivateData.BillingContext = service.TaskBillingContextFromRelayInfo(relayInfo)
 	task.Quota = result.Quota
 	task.Data = result.TaskData
 	if len(result.PluginState) > 0 {

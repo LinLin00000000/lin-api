@@ -39,7 +39,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 
-import { fetchUpstreamModels, updateChannel } from '../../api'
+import { fetchUpstreamModels, updateChannelFields } from '../../api'
 import {
   categorizeModels,
   categorizeModelsWithRedirect,
@@ -185,9 +185,13 @@ export function FetchModelsDialog({
     setIsSaving(true)
     try {
       const modelsString = selectedModels.join(',')
-      const response = await updateChannel(activeChannel.id, {
-        models: modelsString,
-      })
+      const response = await updateChannelFields(
+        activeChannel.id,
+        {
+          models: modelsString,
+        },
+        activeChannel.models
+      )
       if (response.success) {
         toast.success(t('Models updated successfully'))
         queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })

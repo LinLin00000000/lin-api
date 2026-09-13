@@ -24,7 +24,7 @@ import {
   copyChannel,
   deleteChannel,
   testChannel,
-  updateChannel,
+  updateChannelFields,
   updateChannelStatus,
   batchUpdateChannelStatus,
   batchDeleteChannels,
@@ -207,7 +207,7 @@ export async function handleUpdateChannelField(
   onSuccess?: () => void
 ): Promise<void> {
   try {
-    const response = await updateChannel(id, { [fieldName]: value })
+    const response = await updateChannelFields(id, { [fieldName]: value })
     if (response.success) {
       // Show success toast with field name
       const fieldLabel =

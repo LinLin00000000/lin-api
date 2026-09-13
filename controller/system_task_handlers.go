@@ -108,6 +108,15 @@ func (modelUpdateHandler) Run(ctx context.Context, task *model.SystemTask, runne
 		return
 	}
 	summary := runChannelUpstreamModelUpdateTaskOnce(ctx, payload.Manual, !payload.Manual, service.NewSystemTaskProgressReporter(task, runnerID))
+	if !summary.ScanComplete || summary.FailedChannels > 0 {
+		// Preserve the original per-channel commit/refresh outcomes. An incomplete
+		// run is not success, but already committed writes must not be replayed.
+		err := fmt.Errorf("model update incomplete: scan_complete=%t, failed_channels=%d; review channel outcomes before retrying; do not repeat committed writes", summary.ScanComplete, summary.FailedChannels)
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
+		return
+	}
+	// Cache-only degradation is not a persistence failure. The history consumer
+	// displays committed/degraded outcomes without asking for another auto-apply.
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 

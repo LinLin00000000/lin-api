@@ -16,6 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { t } from 'i18next'
+import { toast } from 'sonner'
+
 import { getGroups as getUserGroups } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
 
@@ -47,6 +50,21 @@ const channelActionConfig = (
   skipBusinessError: true,
   skipErrorHandler: true,
 })
+
+/** A committed write must never be presented as a retryable failure. */
+export function handleChannelCommitResult<
+  T extends { success: boolean; committed?: boolean; degraded?: boolean; partial?: boolean },
+>(result: T): T {
+  if (result.committed && result.degraded) {
+    toast.warning(
+      t(
+        'Saved, but cache refresh failed. Do not resend the write; refresh to verify.'
+      )
+    )
+    return result.partial ? result : { ...result, success: true }
+  }
+  return result
+}
 
 export type TaskPluginOption = { key: string; name: string; models: string[] }
 
@@ -131,7 +149,7 @@ export async function createChannel(
   data: AddChannelRequest
 ): Promise<{ success: boolean; message?: string }> {
   const res = await api.post('/api/channel', data, channelActionConfig())
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -139,14 +157,62 @@ export async function createChannel(
  */
 export async function updateChannel(
   id: number,
-  data: Partial<Channel>
-): Promise<{ success: boolean; message?: string; data?: Channel }> {
-  const res = await api.put(
-    '/api/channel/',
-    { id, ...data },
-    channelActionConfig()
-  )
-  return res.data
+  data: Partial<Channel> & { revision: string }
+): Promise<{
+  success: boolean
+  committed?: boolean
+  degraded?: boolean
+  message?: string
+  data?: Channel
+}> {
+  if (!data.revision) {
+    throw new Error(
+      t('Channel revision missing. Refresh and review before saving.')
+    )
+  }
+  let res
+  try {
+    res = await api.put('/api/channel/', { ...data, id }, channelActionConfig())
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'response' in error &&
+      (error.response as { status?: number })?.status === 409
+    ) {
+      throw new Error(
+        t(
+          'Channel changed. Refresh and review before saving; your changes were not saved.'
+        )
+      )
+    }
+    throw error
+  }
+  return handleChannelCommitResult(res.data)
+}
+
+/** Small edits must be based on a fresh detail and protected by its CAS token.
+ * Model replacement additionally checks the snapshot used to build the payload.
+ */
+export async function updateChannelFields(
+  id: number,
+  data: Partial<Channel>,
+  expectedModels?: string
+) {
+  const current = await getChannel(id)
+  if (!current.success || !current.data?.revision) {
+    throw new Error(
+      t('Unable to load channel revision. Refresh before saving.')
+    )
+  }
+  if (expectedModels !== undefined && current.data.models !== expectedModels) {
+    throw new Error(
+      t(
+        'Channel changed. Refresh and review before saving; your changes were not saved.'
+      )
+    )
+  }
+  return updateChannel(id, { ...data, revision: current.data.revision })
 }
 
 /**
@@ -161,7 +227,7 @@ export async function updateChannelStatus(
     { status },
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -176,7 +242,7 @@ export async function batchUpdateChannelStatus(
     { ids, status },
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -186,7 +252,7 @@ export async function deleteChannel(
   id: number
 ): Promise<{ success: boolean; message?: string }> {
   const res = await api.delete(`/api/channel/${id}`, channelActionConfig())
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -196,7 +262,7 @@ export async function batchDeleteChannels(
   data: BatchDeleteParams
 ): Promise<{ success: boolean; message?: string; data?: number }> {
   const res = await api.post('/api/channel/batch', data, channelActionConfig())
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -210,7 +276,7 @@ export async function batchSetChannelTag(
     data,
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 // ============================================================================
@@ -241,7 +307,7 @@ export async function updateChannelBalance(
     `/api/channel/update_balance/${id}`,
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -269,7 +335,7 @@ export async function copyChannel(
     null,
     channelActionConfig({ params })
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -285,7 +351,7 @@ export async function fixChannelAbilities(): Promise<{
     undefined,
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -297,7 +363,7 @@ export async function deleteDisabledChannels(): Promise<{
   data?: number
 }> {
   const res = await api.delete('/api/channel/disabled', channelActionConfig())
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -329,7 +395,7 @@ export async function refreshCodexCredential(
     {},
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 export async function getCodexUsage(
@@ -360,7 +426,7 @@ export async function resetCodexUsage(
     {},
     channelActionConfig({ disableDuplicate: true })
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 // ============================================================================
@@ -378,7 +444,7 @@ export async function manageMultiKeys(
     params,
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -492,7 +558,7 @@ export async function enableTagChannels(
     { tag },
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -506,7 +572,7 @@ export async function disableTagChannels(
     { tag },
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -516,7 +582,7 @@ export async function editTagChannels(
   params: TagOperationParams
 ): Promise<{ success: boolean; message?: string }> {
   const res = await api.put('/api/channel/tag', params, channelActionConfig())
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -564,7 +630,7 @@ export async function deleteOllamaModel(params: {
     '/api/channel/ollama/delete',
     channelActionConfig({ data: params })
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**
@@ -589,7 +655,7 @@ export async function updateAllChannelsBalance(): Promise<{
     '/api/channel/update_balance',
     channelActionConfig()
   )
-  return res.data
+  return handleChannelCommitResult(res.data)
 }
 
 /**

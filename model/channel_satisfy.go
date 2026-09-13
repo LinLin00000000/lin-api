@@ -14,6 +14,10 @@ func IsChannelEnabledForGroupModel(group string, modelName string, channelID int
 	}
 
 	channelSyncLock.RLock()
+	if channelCacheRefreshError != nil {
+		channelSyncLock.RUnlock()
+		return isChannelEnabledForGroupModelDB(group, modelName, channelID)
+	}
 	defer channelSyncLock.RUnlock()
 
 	if group2model2channels == nil {
@@ -44,6 +48,11 @@ func IsChannelEnabledForAnyGroupModel(groups []string, modelName string, channel
 
 func isChannelEnabledForGroupModelDB(group string, modelName string, channelID int) bool {
 	var count int64
+	// Ability projection alone is not sufficient during fallback.
+	var channel Channel
+	if DB.Select("id", "status").First(&channel, channelID).Error != nil || channel.Status != common.ChannelStatusEnabled {
+		return false
+	}
 	err := DB.Model(&Ability{}).
 		Where(commonGroupCol+" = ? and model = ? and channel_id = ? and enabled = ?", group, modelName, channelID, true).
 		Count(&count).Error
