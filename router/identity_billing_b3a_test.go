@@ -202,7 +202,9 @@ func TestIdentityB3aSyncLedger(t *testing.T) {
 	gate.ServeHTTP(gateRec, gateReq)
 	require.Equal(t, 422, gateRec.Code)
 	require.Contains(t, gateRec.Body.String(), "violation_fee_free_conflict")
-	require.Contains(t, gateRec.Body.String(), "B3b")
+	require.Contains(t, gateRec.Body.String(), "identity_service activation remains disabled by storage policy")
+	require.Contains(t, gateRec.Body.String(), "production authorization, backup/restore")
+	require.NotContains(t, gateRec.Body.String(), "(B3b)")
 	require.Contains(t, gateRec.Body.String(), `"activation_ready":false`)
 	common.RetryTimes = 1
 	for _, id := range []string{"ordinary", "Friend"} {
